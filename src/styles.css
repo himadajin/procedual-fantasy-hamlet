@@ -133,6 +133,9 @@ body,
   flex-direction: column;
   gap: 14px;
 }
+.panel-body[hidden] {
+  display: none;
+}
 
 /* Desktop / wide: docked right side panel */
 @media (min-width: 760px) {
@@ -149,11 +152,17 @@ body,
   }
   .panel.collapsed {
     bottom: auto;
+    gap: 0;
+    padding: 10px 16px;
+    width: auto;
   }
   .panel-handle {
     justify-content: flex-end;
     font-size: 12px;
     color: var(--muted);
+  }
+  .panel.collapsed .panel-handle {
+    width: auto;
   }
   .grip {
     width: 18px;
@@ -181,6 +190,7 @@ body,
   }
   .panel.collapsed {
     max-height: unset;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
   }
   .panel-handle {
     flex-direction: column;
