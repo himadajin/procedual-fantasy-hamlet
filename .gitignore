@@ -147,3 +147,10 @@ dist
 coverage
 playwright-report
 test-results
+
+# Local workspace directories
+.claude
+/works/
+/local/
+/tmp/
+/model/
