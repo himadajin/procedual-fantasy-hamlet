@@ -5,7 +5,14 @@
  */
 import { BufferAttribute, BufferGeometry } from 'three';
 import { idx, sampleHeight } from '../../generation/grid';
-import type { Plaza, RoadSegment, TerrainData, Vec2, World } from '../../generation/types';
+import type {
+  BuildingAccess,
+  Plaza,
+  RoadSegment,
+  TerrainData,
+  Vec2,
+  World,
+} from '../../generation/types';
 import { Mesher } from './mesher';
 import { PALETTE, mix, shade, type RGB } from './palette';
 
@@ -139,6 +146,10 @@ export function buildRoadGeometry(world: World): BufferGeometry | null {
     buildPlaza(m, t, plaza, prosperity);
     any = true;
   }
+  for (const access of world.accesses) {
+    buildAccess(m, t, access, prosperity);
+    any = true;
+  }
   if (!any) return null;
   return m.toGeometry();
 }
@@ -196,4 +207,72 @@ function buildPlaza(m: Mesher, t: TerrainData, plaza: Plaza, prosperity: number)
     const y1 = sampleHeight(t, x1, z1) + 0.28;
     m.triangle(cx, cy, cz, x0, y0, z0, x1, y1, z1, color);
   }
+}
+
+function accessColor(access: BuildingAccess, prosperity: number): RGB {
+  switch (access.material) {
+    case 'stone':
+      return mix(PALETTE.plaza, PALETTE.stone, 0.55 + prosperity * 0.25);
+    case 'cobble':
+      return mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.55 + prosperity * 0.3);
+    case 'wood':
+      return mix(PALETTE.wood, PALETTE.timber, 0.35);
+    case 'dirt':
+      return mix(PALETTE.soil, PALETTE.roadDirt, 0.45);
+  }
+}
+
+function buildAccess(m: Mesher, t: TerrainData, access: BuildingAccess, prosperity: number): void {
+  const dx = access.end.x - access.start.x;
+  const dz = access.end.z - access.start.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.05) return;
+
+  const ux = dx / len;
+  const uz = dz / len;
+  const nx = -uz;
+  const nz = ux;
+  const color = accessColor(access, prosperity);
+  const halfW = access.width / 2;
+  const lift = access.material === 'wood' ? 0.42 : 0.36;
+  const segments = Math.max(1, Math.ceil(len / 2.2));
+
+  for (let s = 0; s < segments; s++) {
+    const t0 = s / segments;
+    const t1 = (s + 1) / segments;
+    const c0 = {
+      x: access.start.x + dx * t0,
+      z: access.start.z + dz * t0,
+    };
+    const c1 = {
+      x: access.start.x + dx * t1,
+      z: access.start.z + dz * t1,
+    };
+    const l0 = { x: c0.x + nx * halfW, z: c0.z + nz * halfW };
+    const r0 = { x: c0.x - nx * halfW, z: c0.z - nz * halfW };
+    const l1 = { x: c1.x + nx * halfW, z: c1.z + nz * halfW };
+    const r1 = { x: c1.x - nx * halfW, z: c1.z - nz * halfW };
+    m.quad(
+      l0.x,
+      sampleHeight(t, l0.x, l0.z) + lift,
+      l0.z,
+      r0.x,
+      sampleHeight(t, r0.x, r0.z) + lift,
+      r0.z,
+      r1.x,
+      sampleHeight(t, r1.x, r1.z) + lift,
+      r1.z,
+      l1.x,
+      sampleHeight(t, l1.x, l1.z) + lift,
+      l1.z,
+      color,
+    );
+  }
+
+  const padDepth = Math.min(1.45, Math.max(0.8, access.width * 0.9));
+  const padWidth = access.width * 1.45;
+  const padCx = access.start.x + ux * padDepth * 0.28;
+  const padCz = access.start.z + uz * padDepth * 0.28;
+  const padY = sampleHeight(t, access.start.x, access.start.z) + lift + 0.04;
+  m.box(padCx, padY, padCz, padWidth, 0.16, padDepth, Math.atan2(ux, uz), color);
 }

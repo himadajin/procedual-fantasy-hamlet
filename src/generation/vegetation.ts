@@ -19,6 +19,7 @@ import {
 } from './grid';
 import { centerDistanceNorm, edgeInfluenceOnTerrain } from './fields';
 import type {
+  BuildingAccess,
   Building,
   Plant,
   PlantKind,
@@ -58,6 +59,7 @@ export function generateVegetation(
   water: WaterData,
   buildings: Building[],
   roads: RoadSegment[],
+  accesses: BuildingAccess[],
   center: Vec2,
   enclosureRadius: number,
   settlementRadius: number,
@@ -140,6 +142,7 @@ export function generateVegetation(
 
       // Skip on/near roads.
       if (nearRoad(p, roads, 2.5)) continue;
+      if (nearAccess(p, accesses, 1.2)) continue;
 
       // Pick a kind by terrain context.
       let kind: PlantKind;
@@ -170,6 +173,21 @@ function nearRoad(p: Vec2, roads: RoadSegment[], margin: number): boolean {
       const cz = a.z + abz * t;
       if (Math.hypot(p.x - cx, p.z - cz) < lim) return true;
     }
+  }
+  return false;
+}
+
+function nearAccess(p: Vec2, accesses: BuildingAccess[], margin: number): boolean {
+  for (const access of accesses) {
+    const lim = access.width * 0.5 + margin;
+    const abx = access.end.x - access.start.x;
+    const abz = access.end.z - access.start.z;
+    const len2 = abx * abx + abz * abz || 1e-6;
+    let t = ((p.x - access.start.x) * abx + (p.z - access.start.z) * abz) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const cx = access.start.x + abx * t;
+    const cz = access.start.z + abz * t;
+    if (Math.hypot(p.x - cx, p.z - cz) < lim) return true;
   }
   return false;
 }

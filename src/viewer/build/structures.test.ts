@@ -84,6 +84,7 @@ function worldWith(building: Building): World {
     center: { x: 0, z: 0 },
     roads: [],
     plazas: [],
+    accesses: [],
     buildings: [building],
     walls: [],
     towers: [],

@@ -58,6 +58,7 @@ export function generateWorld(input: GenerateInput): World {
     water,
     settlement.buildings,
     network.roads,
+    settlement.accesses,
     center,
     defenses.enclosureRadius,
     network.settlementRadius,
@@ -70,6 +71,7 @@ export function generateWorld(input: GenerateInput): World {
     buildings: settlement.buildings,
     towers: defenses.towers.length,
     bridges: network.bridges.length,
+    accesses: settlement.accesses.length,
     plants: plants.length,
     hasWalls: defenses.hasWalls,
     hasMoat: defenses.hasMoat,
@@ -89,6 +91,7 @@ export function generateWorld(input: GenerateInput): World {
     center,
     roads: network.roads,
     plazas: settlement.plazas,
+    accesses: settlement.accesses,
     buildings: settlement.buildings,
     walls: defenses.walls,
     towers: defenses.towers,
@@ -130,6 +133,7 @@ interface SummaryInput {
   buildings: Building[];
   towers: number;
   bridges: number;
+  accesses: number;
   plants: number;
   hasWalls: boolean;
   hasMoat: boolean;
@@ -172,7 +176,13 @@ function buildSummary(s: SummaryInput): WorldSummary {
   // Triangle estimate (very rough) for the load indicator.
   const triPerBuilding = 90;
   const triEstimate =
-    s.terrainVerts * 2 + n * triPerBuilding + s.towers * 80 + s.bridges * 40 + s.plants * 60 + 4000;
+    s.terrainVerts * 2 +
+    n * triPerBuilding +
+    s.towers * 80 +
+    s.bridges * 40 +
+    s.accesses * 16 +
+    s.plants * 60 +
+    4000;
   const complexity =
     triEstimate < 90_000
       ? 'Light'

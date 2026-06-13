@@ -55,6 +55,21 @@ export interface Plaza {
   kind: PlazaKind;
 }
 
+export type BuildingAccessKind = 'road' | 'plaza' | 'water';
+export type BuildingAccessMaterial = 'dirt' | 'cobble' | 'stone' | 'wood';
+
+export interface BuildingAccess {
+  /** The building whose front threshold this path or apron serves. */
+  buildingId: number;
+  /** Threshold point just outside the front facade. */
+  start: Vec2;
+  /** Road, plaza edge or shoreline point the entrance answers to. */
+  end: Vec2;
+  width: number;
+  kind: BuildingAccessKind;
+  material: BuildingAccessMaterial;
+}
+
 export type BuildingRole =
   | 'monument'
   | 'dwelling'
@@ -193,6 +208,7 @@ export interface World {
   center: Vec2;
   roads: RoadSegment[];
   plazas: Plaza[];
+  accesses: BuildingAccess[];
   buildings: Building[];
   walls: WallSegment[];
   towers: Tower[];

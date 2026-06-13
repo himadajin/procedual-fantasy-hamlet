@@ -12,6 +12,7 @@ function fingerprint(world: ReturnType<typeof generateWorld>): string {
     world.towers.length,
     world.bridges.length,
     world.plants.length,
+    world.accesses.length,
     Math.round(world.water.coverage * 1000),
   ];
   for (const b of world.buildings) {
@@ -23,7 +24,35 @@ function fingerprint(world: ReturnType<typeof generateWorld>): string {
       Math.round(b.tiers[0].width * 100),
     );
   }
+  for (const a of world.accesses) {
+    parts.push(
+      a.buildingId,
+      a.kind,
+      a.material,
+      Math.round(a.start.x * 100),
+      Math.round(a.start.z * 100),
+      Math.round(a.end.x * 100),
+      Math.round(a.end.z * 100),
+    );
+  }
   return parts.join('|');
+}
+
+function dist(a: { x: number; z: number }, b: { x: number; z: number }): number {
+  return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
+function frontExtent(building: ReturnType<typeof generateWorld>['buildings'][number]): number {
+  return building.tiers.reduce((front, tier) => Math.max(front, tier.offsetZ + tier.depth / 2), 0);
+}
+
+function localZ(
+  building: ReturnType<typeof generateWorld>['buildings'][number],
+  p: { x: number; z: number },
+): number {
+  const dx = p.x - building.position.x;
+  const dz = p.z - building.position.z;
+  return dx * Math.sin(building.rotation) + dz * Math.cos(building.rotation);
 }
 
 describe('deterministic generation', () => {
@@ -90,6 +119,26 @@ describe('default world is a believable fortified settlement', () => {
   it('builds a road skeleton', () => {
     expect(world.roads.length).toBeGreaterThan(2);
     expect(world.roads.some((r) => r.klass === 'main')).toBe(true);
+  });
+
+  it('connects every building front back to its access target', () => {
+    expect(world.accesses).toHaveLength(world.buildings.length);
+    const byId = new Map(world.buildings.map((b) => [b.id, b]));
+
+    for (const access of world.accesses) {
+      const building = byId.get(access.buildingId);
+      expect(building).toBeDefined();
+      if (!building) continue;
+
+      expect(access.width).toBeGreaterThan(0.7);
+      expect(dist(access.start, access.end)).toBeGreaterThan(0.45);
+      expect(localZ(building, access.start)).toBeGreaterThan(frontExtent(building) - 0.15);
+
+      const fx = Math.sin(building.rotation);
+      const fz = Math.cos(building.rotation);
+      const forward = (access.end.x - access.start.x) * fx + (access.end.z - access.start.z) * fz;
+      expect(forward).toBeGreaterThan(0.2);
+    }
   });
 });
 

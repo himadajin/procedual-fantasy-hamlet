@@ -27,6 +27,8 @@ import { pointInPolygon } from './defenses';
 import type {
   Bridge,
   Building,
+  BuildingAccess,
+  BuildingAccessMaterial,
   BuildingRole,
   BuildingTier,
   Gate,
@@ -42,6 +44,7 @@ import type {
 export interface SettlementResult {
   buildings: Building[];
   plazas: Plaza[];
+  accesses: BuildingAccess[];
 }
 
 interface Placed {
@@ -54,6 +57,8 @@ interface Candidate {
   face: number; // angle the front faces
   source: 'road' | 'plaza' | 'water';
   klass: 'main' | 'street' | 'lane' | 'ring';
+  anchor: Vec2;
+  approachWidth: number;
 }
 
 interface Footprint {
@@ -133,6 +138,7 @@ export function generateSettlement(
   const buildings: Building[] = [];
   const placed: Placed[] = [];
   const plazas: Plaza[] = [];
+  const accesses: BuildingAccess[] = [];
 
   // --- 1. The monument ----------------------------------------------------
   const firstRoadEnd = roads.length > 0 ? roads[0].points[roads[0].points.length - 1] : center;
@@ -152,23 +158,39 @@ export function generateSettlement(
     radius: buildingPlanRadius(monument),
   });
 
-  const monumentRadius = buildingPlanRadius(monument);
-
   // --- 2. Plazas (front, courtyard, gates, bridges, junctions) ------------
   const plazaTidiness = prosperity;
   // Civic plaza in front of the monument.
   const frontDir = monument.rotation;
+  const monumentFront = buildingFrontExtent(monument);
   const civicR = lerp(8, 18, monumentality) * (1 - settlement * 0.3);
   const civic: Plaza = {
     center: {
-      x: center.x + Math.sin(frontDir) * (monumentRadius * 0.7 + civicR),
-      z: center.z + Math.cos(frontDir) * (monumentRadius * 0.7 + civicR),
+      x: center.x + Math.sin(frontDir) * (monumentFront + civicR * 1.15),
+      z: center.z + Math.cos(frontDir) * (monumentFront + civicR * 1.15),
     },
     radius: civicR * (0.8 + plazaTidiness * 0.4),
     kind: 'civic',
   };
   plazas.push(civic);
   placed.push({ pos: civic.center, radius: civic.radius * 0.8 });
+  addAccessAndTerrace(
+    terrain,
+    accesses,
+    monument,
+    {
+      pos: monument.position,
+      face: monument.rotation,
+      source: 'plaza',
+      klass: 'main',
+      anchor: {
+        x: civic.center.x - Math.sin(monument.rotation) * civic.radius * 0.78,
+        z: civic.center.z - Math.cos(monument.rotation) * civic.radius * 0.78,
+      },
+      approachWidth: civic.radius * 0.28,
+    },
+    params,
+  );
 
   // Courtyard inside the walls.
   if (enclosureRadius > 18 && defense > 0.4) {
@@ -239,7 +261,14 @@ export function generateSettlement(
           const pos = { x: px + nx * setback * side, z: pz + nz * setback * side };
           // Front faces back toward the road.
           const face = Math.atan2(-nx * side, -nz * side);
-          candidates.push({ pos, face, source: 'road', klass });
+          candidates.push({
+            pos,
+            face,
+            source: 'road',
+            klass,
+            anchor: { x: px, z: pz },
+            approachWidth: road.width,
+          });
         }
         acc += stepLen;
       }
@@ -259,7 +288,17 @@ export function generateSettlement(
         z: plaza.center.z + Math.sin(a) * ring,
       };
       const face = Math.atan2(plaza.center.x - pos.x, plaza.center.z - pos.z);
-      candidates.push({ pos, face, source: 'plaza', klass: 'street' });
+      candidates.push({
+        pos,
+        face,
+        source: 'plaza',
+        klass: 'street',
+        anchor: {
+          x: plaza.center.x - Math.sin(face) * plaza.radius * 0.86,
+          z: plaza.center.z - Math.cos(face) * plaza.radius * 0.86,
+        },
+        approachWidth: plaza.radius * 0.22,
+      });
     }
   }
 
@@ -279,7 +318,14 @@ export function generateSettlement(
         if (distance(pos, center) > settlementRadius * 1.25) continue;
         // Face toward the water.
         const face = Math.atan2(-nx * side, -nz * side);
-        candidates.push({ pos, face, source: 'water', klass: 'lane' });
+        candidates.push({
+          pos,
+          face,
+          source: 'water',
+          klass: 'lane',
+          anchor: { x: p.x, z: p.z },
+          approachWidth: 2.2,
+        });
       }
     }
   }
@@ -296,11 +342,11 @@ export function generateSettlement(
 
   for (const cand of candidates) {
     if (buildings.length >= maxBuildings) break;
-    const { pos } = cand;
-    const r = distance(pos, center) / settlementRadius;
+    const seedPos = cand.pos;
+    const r = distance(seedPos, center) / settlementRadius;
 
     // Density falls off beyond the settlement radius.
-    const inCore = pointInPolygon(pos, enclosure);
+    const inCore = pointInPolygon(seedPos, enclosure);
     const falloff = 1 - smoothstep(0.6, 1.4, r);
     const sourceBoost = cand.source === 'plaza' ? 1.3 : cand.source === 'water' ? 1.15 : 1;
     let prob = (0.45 + settlement * 0.6) * falloff * sourceBoost;
@@ -308,26 +354,33 @@ export function generateSettlement(
     if (r > 1.4) prob *= 0.35; // a few outliers beyond the edge
     if (!rng.chance(prob)) continue;
 
+    // Role falls out of context near the road/plaza/water target; once the
+    // footprint is known, move the building center back so the front wall and
+    // entrance answer the target without swallowing the street.
+    const roughWaterside =
+      cand.source === 'water' || (nearWater(terrain, water, seedPos, 6) && waterPresence > 0.45);
+    const role = decideRole(cand, r, inCore, roughWaterside, bridges, gates, rng, params);
+    const footprint = roleFootprint(role, rng, params);
+    const finalPos = settledCandidatePosition(cand, role, footprint, settlement);
+    if (!insideTerrain(terrain, finalPos, Math.max(footprint.w, footprint.d) * 0.7)) continue;
+
     // Reject water tiles unless this will be a waterside building.
-    const onWater = inWater(terrain, water, pos);
+    const onWater = inWater(terrain, water, finalPos);
     const isWaterside =
-      cand.source === 'water' || (nearWater(terrain, water, pos, 6) && waterPresence > 0.45);
+      cand.source === 'water' || (nearWater(terrain, water, finalPos, 6) && waterPresence > 0.45);
     if (onWater && !isWaterside) continue;
 
-    // Reject steep ground.
-    const slope = slopeAt(terrain, pos.x, pos.z);
+    // Reject steep ground after the final footprint-aware shift.
+    const slope = slopeAt(terrain, finalPos.x, finalPos.z);
     if (slope > lerp(0.9, 0.55, frac(params.terrainRuggedness))) continue;
 
-    // Spacing against already-placed buildings.
-    const role = decideRole(cand, r, inCore, isWaterside, bridges, gates, rng, params);
-    const ground = isWaterside ? water.level : sampleHeight(terrain, pos.x, pos.z);
-    const refineNoise = weather.fbm(pos.x * 0.05 + 5, pos.z * 0.05 - 2, 3);
-    const footprint = roleFootprint(role, rng, params);
+    const ground = isWaterside ? water.level : sampleHeight(terrain, finalPos.x, finalPos.z);
+    const refineNoise = weather.fbm(finalPos.x * 0.05 + 5, finalPos.z * 0.05 - 2, 3);
     const building = makeBuilding(
       rng,
       nextId,
       role,
-      pos,
+      finalPos,
       ground,
       cand.face + rng.jitter(0.12),
       params,
@@ -340,21 +393,21 @@ export function generateSettlement(
     let clash = false;
     const clashMargin = lerp(1.8, 0.5, settlement);
     for (const pl of placed) {
-      if (distance(pl.pos, pos) < pl.radius + radius + clashMargin) {
+      if (distance(pl.pos, finalPos) < pl.radius + radius + clashMargin) {
         clash = true;
         break;
       }
     }
     if (clash) continue;
 
-    if (!isWaterside) terrace(terrain, pos, terraceRadius * 1.1, ground);
+    if (!isWaterside) terrace(terrain, finalPos, terraceRadius * 1.1, ground);
+    addAccessAndTerrace(terrain, accesses, building, { ...cand, pos: finalPos }, params);
     buildings.push(building);
-    placed.push({ pos, radius });
+    placed.push({ pos: finalPos, radius });
     nextId += 1;
   }
 
-  void prosperity;
-  return { buildings, plazas };
+  return { buildings, plazas, accesses };
 }
 
 // --------------------------------------------------------------------------
@@ -438,6 +491,155 @@ function buildingPlanRadius(b: Building): number {
     radius = Math.max(radius, offset + Math.max(tier.width, tier.depth) * 0.62);
   }
   return radius;
+}
+
+function insideTerrain(terrain: TerrainData, p: Vec2, margin: number): boolean {
+  const limit = terrain.half - margin;
+  return Math.abs(p.x) < limit && Math.abs(p.z) < limit;
+}
+
+function estimatedFrontExtent(role: BuildingRole, fp: Footprint): number {
+  if (role === 'monument') return fp.d * 0.62;
+  if (role === 'hall' || role === 'waterside' || role === 'bridgehouse') return fp.d * 0.68;
+  if (role === 'dwelling') return fp.d * 0.64;
+  return fp.d * 0.58;
+}
+
+function settledCandidatePosition(
+  cand: Candidate,
+  role: BuildingRole,
+  fp: Footprint,
+  settlement: number,
+): Vec2 {
+  const front = estimatedFrontExtent(role, fp);
+  const streetGap =
+    cand.source === 'road'
+      ? cand.approachWidth * 0.5 + lerp(0.75, 0.35, settlement)
+      : cand.source === 'plaza'
+        ? lerp(0.7, 0.35, settlement)
+        : 1.1;
+  const fx = Math.sin(cand.face);
+  const fz = Math.cos(cand.face);
+  return {
+    x: cand.anchor.x - fx * (front + streetGap),
+    z: cand.anchor.z - fz * (front + streetGap),
+  };
+}
+
+function localPoint(b: Building, lx: number, lz: number): Vec2 {
+  const cos = Math.cos(b.rotation);
+  const sin = Math.sin(b.rotation);
+  return {
+    x: b.position.x + lx * cos + lz * sin,
+    z: b.position.z - lx * sin + lz * cos,
+  };
+}
+
+function buildingFrontExtent(b: Building): number {
+  let front = 0;
+  for (const tier of b.tiers) {
+    front = Math.max(front, tier.offsetZ + tier.depth / 2);
+  }
+  return front;
+}
+
+function accessWidth(b: Building, source: Candidate['source'], params: WorldParams): number {
+  const prosperity = frac(params.prosperity);
+  if (b.role === 'monument') return lerp(2.6, 3.8, prosperity);
+  if (b.role === 'hall' || b.role === 'gatehouse') return lerp(1.7, 2.4, prosperity);
+  if (source === 'plaza') return lerp(1.25, 1.9, prosperity);
+  if (source === 'water') return lerp(1.1, 1.6, prosperity);
+  if (b.role === 'outlier') return 0.85;
+  return lerp(0.95, 1.45, prosperity);
+}
+
+function accessMaterial(
+  b: Building,
+  source: Candidate['source'],
+  params: WorldParams,
+): BuildingAccessMaterial {
+  const prosperity = frac(params.prosperity);
+  if (source === 'water' || b.role === 'waterside' || b.role === 'bridgehouse') return 'wood';
+  if (b.role === 'monument' || b.role === 'gatehouse')
+    return prosperity > 0.45 ? 'stone' : 'cobble';
+  if (prosperity > 0.72) return 'stone';
+  if (prosperity > 0.38 || source === 'plaza') return 'cobble';
+  return 'dirt';
+}
+
+function addAccessAndTerrace(
+  terrain: TerrainData,
+  accesses: BuildingAccess[],
+  building: Building,
+  cand: Candidate,
+  params: WorldParams,
+): void {
+  const front = buildingFrontExtent(building);
+  const start = localPoint(building, 0, front + 0.32);
+  let end = cand.anchor;
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.8) {
+    const fx = Math.sin(building.rotation);
+    const fz = Math.cos(building.rotation);
+    end = { x: start.x + fx * 0.8, z: start.z + fz * 0.8 };
+  }
+  const access: BuildingAccess = {
+    buildingId: building.id,
+    start,
+    end,
+    width: accessWidth(building, cand.source, params),
+    kind: cand.source,
+    material: accessMaterial(building, cand.source, params),
+  };
+  accesses.push(access);
+  if (building.stiltHeight <= 0) terraceAccess(terrain, access, building.ground);
+}
+
+function terraceAccess(terrain: TerrainData, access: BuildingAccess, startGround: number): void {
+  const { size } = terrain;
+  const minX = Math.min(access.start.x, access.end.x) - access.width * 2.2;
+  const maxX = Math.max(access.start.x, access.end.x) + access.width * 2.2;
+  const minZ = Math.min(access.start.z, access.end.z) - access.width * 2.2;
+  const maxZ = Math.max(access.start.z, access.end.z) + access.width * 2.2;
+  const f0 = worldToCellF(terrain, minX, minZ);
+  const f1 = worldToCellF(terrain, maxX, maxZ);
+  const i0 = clampInt(Math.floor(Math.min(f0.fi, f1.fi)), 0, size - 1);
+  const i1 = clampInt(Math.ceil(Math.max(f0.fi, f1.fi)), 0, size - 1);
+  const j0 = clampInt(Math.floor(Math.min(f0.fj, f1.fj)), 0, size - 1);
+  const j1 = clampInt(Math.ceil(Math.max(f0.fj, f1.fj)), 0, size - 1);
+  const endGround = sampleHeight(terrain, access.end.x, access.end.z);
+  const radius = access.width * 0.65 + 0.75;
+
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      const p = cellToWorld(terrain, i, j);
+      const nearest = nearestOnSegment(p, access.start, access.end);
+      if (nearest.distance > radius) continue;
+      const k = idx(size, i, j);
+      const target = lerp(startGround, endGround, nearest.t);
+      const blend = 0.7 * (1 - smoothstep(access.width * 0.3, radius, nearest.distance));
+      terrain.heights[k] = lerp(terrain.heights[k], target, blend);
+    }
+  }
+}
+
+function nearestOnSegment(
+  p: Vec2,
+  a: Vec2,
+  b: Vec2,
+): {
+  t: number;
+  distance: number;
+} {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const l2 = dx * dx + dz * dz || 1;
+  const t = clamp01(((p.x - a.x) * dx + (p.z - a.z) * dz) / l2);
+  const x = a.x + dx * t;
+  const z = a.z + dz * t;
+  return { t, distance: Math.hypot(p.x - x, p.z - z) };
 }
 
 // --------------------------------------------------------------------------
