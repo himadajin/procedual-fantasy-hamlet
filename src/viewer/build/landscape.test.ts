@@ -14,6 +14,34 @@ function flatTerrain(): TerrainData {
   };
 }
 
+function shoreTerrain(): TerrainData {
+  return {
+    size: 4,
+    half: 12,
+    heights: new Float32Array([
+      1,
+      1,
+      1,
+      1, //
+      1,
+      -1,
+      -1,
+      1, //
+      1,
+      -1,
+      -1,
+      1, //
+      1,
+      1,
+      1,
+      1,
+    ]),
+    cellSize: 8,
+    minHeight: -1,
+    maxHeight: 1,
+  };
+}
+
 function summary(params: WorldParams): WorldSummary {
   return {
     seed: 'test',
@@ -83,6 +111,71 @@ function roadWorld(params: WorldParams): World {
   };
 }
 
+function waterWorld(params: WorldParams): World {
+  const terrain = shoreTerrain();
+  const mask = new Uint8Array([
+    0,
+    0,
+    0,
+    0, //
+    0,
+    1,
+    1,
+    0, //
+    0,
+    1,
+    1,
+    0, //
+    0,
+    0,
+    0,
+    0,
+  ]);
+  return {
+    seed: 'test',
+    seedValue: 1,
+    params,
+    half: terrain.half,
+    terrain,
+    water: {
+      level: 0,
+      mask,
+      coverage: 0.25,
+      kinds: ['pond'],
+      hasMoat: false,
+      riverPath: [],
+    },
+    center: { x: 0, z: 0 },
+    roads: [],
+    plazas: [],
+    accesses: [
+      {
+        buildingId: 1,
+        start: { x: -5, z: 2 },
+        end: { x: -1, z: 2 },
+        width: 1.25,
+        kind: 'water',
+        material: 'wood',
+      },
+    ],
+    buildings: [],
+    walls: [],
+    towers: [],
+    gates: [],
+    bridges: [
+      {
+        a: { x: -7, z: 0 },
+        b: { x: 7, z: 0 },
+        deckLevel: 1.6,
+        width: 3,
+        hasHouse: false,
+      },
+    ],
+    plants: [],
+    summary: summary(params),
+  };
+}
+
 function triangleCount(world: World): number {
   const geometry = buildRoadGeometry(world);
   expect(geometry).not.toBeNull();
@@ -101,5 +194,11 @@ describe('landscape road meshing', () => {
     const prosperous = roadWorld({ ...DEFAULT_PARAMS, prosperity: 85 });
 
     expect(triangleCount(prosperous)).toBeGreaterThan(triangleCount(poor));
+  });
+
+  it('adds shoreline, bridge-head and waterside access structure for water worlds', () => {
+    const count = triangleCount(waterWorld(DEFAULT_PARAMS));
+
+    expect(count).toBeGreaterThan(100);
   });
 });

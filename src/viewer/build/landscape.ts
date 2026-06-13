@@ -6,6 +6,7 @@
 import { BufferAttribute, BufferGeometry } from 'three';
 import { idx, sampleHeight } from '../../generation/grid';
 import type {
+  Bridge,
   BuildingAccess,
   Plaza,
   RoadSegment,
@@ -132,13 +133,19 @@ export function buildWaterGeometry(world: World): BufferGeometry | null {
   return m.toGeometry();
 }
 
-/** Road ribbons and plaza pavings, hugging the terrain a little above it. */
+/** Road, plaza, access and shoreline pavings, hugging the terrain a little above it. */
 export function buildRoadGeometry(world: World): BufferGeometry | null {
   const t = world.terrain;
   const m = new Mesher();
   const prosperity = world.params.prosperity / 100;
+  const waterPresence = world.params.waterPresence / 100;
   let any = false;
 
+  if (buildShoreline(m, world, prosperity, waterPresence)) any = true;
+  for (const bridge of world.bridges) {
+    buildBridgeHead(m, t, bridge, prosperity);
+    any = true;
+  }
   for (const road of world.roads) {
     if (buildRibbon(m, t, road, prosperity)) any = true;
   }
@@ -147,11 +154,181 @@ export function buildRoadGeometry(world: World): BufferGeometry | null {
     any = true;
   }
   for (const access of world.accesses) {
-    buildAccess(m, t, access, prosperity);
+    buildAccess(m, t, access, prosperity, world.water.level);
     any = true;
   }
   if (!any) return null;
   return m.toGeometry();
+}
+
+function isWaterCell(world: World, i: number, j: number): boolean {
+  const n = world.terrain.size;
+  if (i < 0 || j < 0 || i >= n || j >= n) return false;
+  return world.water.mask[idx(n, i, j)] === 1;
+}
+
+function buildShoreline(
+  m: Mesher,
+  world: World,
+  prosperity: number,
+  waterPresence: number,
+): boolean {
+  if (world.water.coverage <= 0) return false;
+  const t = world.terrain;
+  const n = t.size;
+  const c = t.cellSize;
+  const band = Math.max(0.28, Math.min(0.72, c * 0.14));
+  const lift = 0.31;
+  const sandColor = mix(PALETTE.sand, PALETTE.soil, 0.42);
+  const stoneColor = mix(PALETTE.stoneDark, PALETTE.rock, 0.25 + prosperity * 0.18);
+  const wetColor = mix(PALETTE.soil, PALETTE.waterShallow, 0.08 + waterPresence * 0.08);
+  const density = 0.42 + waterPresence * 0.18;
+  let any = false;
+
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      const wet = isWaterCell(world, i, j);
+      if (!wet) continue;
+      const x0 = -t.half + i * c;
+      const z0 = -t.half + j * c;
+      const x1 = x0 + c;
+      const z1 = z0 + c;
+      const edgeColor = (i + j) % 3 === 0 && prosperity > 0.42 ? stoneColor : sandColor;
+
+      if (!isWaterCell(world, i - 1, j) && shoreHash(i, j, 0) < density) {
+        shorePatch(m, t, x0 - band * 0.45, (z0 + z1) / 2, 0, c, band, lift, edgeColor, i, j, 0);
+        any = true;
+      }
+      if (!isWaterCell(world, i + 1, j) && shoreHash(i, j, 1) < density) {
+        shorePatch(m, t, x1 + band * 0.45, (z0 + z1) / 2, 0, c, band, lift, edgeColor, i, j, 1);
+        any = true;
+      }
+      if (!isWaterCell(world, i, j - 1) && shoreHash(i, j, 2) < density) {
+        shorePatch(
+          m,
+          t,
+          (x0 + x1) / 2,
+          z0 - band * 0.45,
+          Math.PI / 2,
+          c,
+          band,
+          lift,
+          wetColor,
+          i,
+          j,
+          2,
+        );
+        any = true;
+      }
+      if (!isWaterCell(world, i, j + 1) && shoreHash(i, j, 3) < density) {
+        shorePatch(
+          m,
+          t,
+          (x0 + x1) / 2,
+          z1 + band * 0.45,
+          Math.PI / 2,
+          c,
+          band,
+          lift,
+          edgeColor,
+          i,
+          j,
+          3,
+        );
+        any = true;
+      }
+    }
+  }
+  return any;
+}
+
+function shoreHash(i: number, j: number, salt: number): number {
+  const x = Math.sin((i * 127.1 + j * 311.7 + salt * 74.7) * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function shorePatch(
+  m: Mesher,
+  t: TerrainData,
+  centerX: number,
+  centerZ: number,
+  rot: number,
+  cellSize: number,
+  width: number,
+  lift: number,
+  color: RGB,
+  i: number,
+  j: number,
+  salt: number,
+): void {
+  const length = cellSize * (0.22 + shoreHash(i, j, salt + 7) * 0.24);
+  const inset = cellSize * (shoreHash(i, j, salt + 13) - 0.5) * 0.3;
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  const cx = centerX + cos * inset;
+  const cz = centerZ - sin * inset;
+  const hx = length / 2;
+  const hz = width / 2;
+  const p = (lx: number, lz: number): Vec2 => ({
+    x: cx + lx * cos + lz * sin,
+    z: cz - lx * sin + lz * cos,
+  });
+  const a = p(-hx, -hz);
+  const b = p(hx, -hz);
+  const c = p(hx, hz);
+  const d = p(-hx, hz);
+  m.quad(
+    a.x,
+    sampleHeight(t, a.x, a.z) + lift,
+    a.z,
+    b.x,
+    sampleHeight(t, b.x, b.z) + lift,
+    b.z,
+    c.x,
+    sampleHeight(t, c.x, c.z) + lift,
+    c.z,
+    d.x,
+    sampleHeight(t, d.x, d.z) + lift,
+    d.z,
+    color,
+  );
+}
+
+function buildBridgeHead(m: Mesher, t: TerrainData, bridge: Bridge, prosperity: number): void {
+  const dx = bridge.b.x - bridge.a.x;
+  const dz = bridge.b.z - bridge.a.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.2) return;
+  const ux = dx / len;
+  const uz = dz / len;
+  const rot = Math.atan2(dx, dz);
+  const color = mix(PALETTE.stoneDark, PALETTE.stone, 0.32 + prosperity * 0.38);
+  const apronColor = mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.35 + prosperity * 0.35);
+  const width = bridge.width + 1.4;
+  const depth = Math.min(3.4, Math.max(1.8, bridge.width * 0.55));
+
+  for (const [p, dir] of [
+    [bridge.a, -1],
+    [bridge.b, 1],
+  ] as const) {
+    const cx = p.x + ux * depth * 0.32 * dir;
+    const cz = p.z + uz * depth * 0.32 * dir;
+    const y = sampleHeight(t, p.x, p.z) + 0.48;
+    m.box(cx, y, cz, width, 0.28, depth, rot, color);
+
+    const approachCx = p.x + ux * depth * 0.92 * dir;
+    const approachCz = p.z + uz * depth * 0.92 * dir;
+    m.box(
+      approachCx,
+      sampleHeight(t, approachCx, approachCz) + 0.38,
+      approachCz,
+      bridge.width,
+      0.12,
+      depth * 1.15,
+      rot,
+      apronColor,
+    );
+  }
 }
 
 function buildRibbon(m: Mesher, t: TerrainData, road: RoadSegment, prosperity: number): boolean {
@@ -382,7 +559,13 @@ function accessColor(access: BuildingAccess, prosperity: number): RGB {
   }
 }
 
-function buildAccess(m: Mesher, t: TerrainData, access: BuildingAccess, prosperity: number): void {
+function buildAccess(
+  m: Mesher,
+  t: TerrainData,
+  access: BuildingAccess,
+  prosperity: number,
+  waterLevel: number,
+): void {
   const dx = access.end.x - access.start.x;
   const dz = access.end.z - access.start.z;
   const len = Math.hypot(dx, dz);
@@ -451,4 +634,25 @@ function buildAccess(m: Mesher, t: TerrainData, access: BuildingAccess, prosperi
     Math.atan2(ux, uz),
     apronColor,
   );
+
+  if (access.kind === 'water') {
+    const pierTop = Math.max(waterLevel + 0.5, sampleHeight(t, apronCx, apronCz) + 0.7);
+    const postColor = PALETTE.timberDark;
+    for (const side of [-1, 1]) {
+      const px = access.end.x + nx * (apronWidth * 0.42) * side;
+      const pz = access.end.z + nz * (apronWidth * 0.42) * side;
+      const bed = sampleHeight(t, px, pz) - 0.2;
+      m.cylinder(px, bed, pz, 0.16, Math.max(0.4, pierTop - bed), 6, postColor, true);
+    }
+    m.box(
+      access.end.x,
+      pierTop,
+      access.end.z,
+      apronWidth,
+      0.18,
+      0.18,
+      Math.atan2(ux, uz),
+      postColor,
+    );
+  }
 }
