@@ -54,6 +54,44 @@ export function slopeAt(t: TerrainData, x: number, z: number): number {
   return Math.hypot(dx, dz);
 }
 
+export interface HeightStats {
+  min: number;
+  max: number;
+  avg: number;
+  range: number;
+}
+
+/** Height range around a point. Used for footprint suitability before building. */
+export function heightStatsInRadius(t: TerrainData, p: Vec2, radius: number): HeightStats {
+  const { fi, fj } = worldToCellF(t, p.x, p.z);
+  const span = Math.max(1, Math.ceil(radius / t.cellSize));
+  const ci = clampInt(Math.round(fi), 0, t.size - 1);
+  const cj = clampInt(Math.round(fj), 0, t.size - 1);
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+  let count = 0;
+  for (let dj = -span; dj <= span; dj++) {
+    for (let di = -span; di <= span; di++) {
+      const i = ci + di;
+      const j = cj + dj;
+      if (i < 0 || j < 0 || i >= t.size || j >= t.size) continue;
+      const w = cellToWorld(t, i, j);
+      if (distance(w, p) > radius) continue;
+      const h = t.heights[idx(t.size, i, j)];
+      min = Math.min(min, h);
+      max = Math.max(max, h);
+      sum += h;
+      count += 1;
+    }
+  }
+  if (count === 0) {
+    const h = sampleHeight(t, p.x, p.z);
+    return { min: h, max: h, avg: h, range: 0 };
+  }
+  return { min, max, avg: sum / count, range: max - min };
+}
+
 export function dist2(a: Vec2, b: Vec2): number {
   const dx = a.x - b.x;
   const dz = a.z - b.z;

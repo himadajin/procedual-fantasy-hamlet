@@ -1,14 +1,15 @@
 /**
  * Terrain phase. Builds the heightfield that every later phase reads from.
  *
- * The terrain is not decoration: ruggedness sets relief and cliffs, a soft
- * central knoll gives the monument prominent ground, and a continuous boundary
- * field makes the finite diorama close naturally without forcing a mountain
- * ring. World scale sets the physical extent.
+ * The terrain is not decoration: ruggedness is a signed deviation around an
+ * ordinary hilly landscape (50), and a continuous boundary field makes the
+ * finite diorama close naturally without forcing a mountain ring. World scale
+ * sets the physical extent. Buildings adapt to this terrain later; terrain does
+ * not know about future monuments or footprints.
  */
 import { ValueNoise2D } from './noise';
 import { Rng } from './rng';
-import { frac, type WorldParams } from './params';
+import { frac, signedFromMid, type WorldParams } from './params';
 import { idx, smoothstep, lerp } from './grid';
 import { edgeInfluenceAt, outerFadeAt } from './fields';
 import type { TerrainData } from './types';
@@ -22,31 +23,32 @@ export function generateTerrain(seedValue: number, params: WorldParams): Terrain
   const warpNoise = new ValueNoise2D(seedValue ^ 0x51ed270b);
 
   const rugged = frac(params.terrainRuggedness);
+  const ruggedSigned = signedFromMid(params.terrainRuggedness);
+  const calm = Math.max(0, -ruggedSigned);
+  const rough = Math.max(0, ruggedSigned);
   const scale = frac(params.worldScale);
 
   // Physical half-extent grows with world scale.
   const half = lerp(58, 150, scale);
   const cellSize = (2 * half) / (GRID - 1);
 
-  // Relief amplitude and ridge weight scale with ruggedness.
-  const amplitude = lerp(7, 50, rugged);
-  const ridgeWeight = lerp(0.1, 0.95, rugged);
-  // Base noise frequency: more rugged worlds get slightly busier relief.
-  const freq = lerp(1.7, 3.0, rugged) / (2 * half);
-  const warpAmp = lerp(8, 26, rugged);
-
-  // Central knoll: gives the future monument elevated, prominent ground.
-  const knollHeight =
-    lerp(3, 16, frac(params.monumentality)) + lerp(0, 10, frac(params.defensePressure));
-  const knollRadius = half * lerp(0.16, 0.28, scale);
+  // 50 is the ordinary profile. Values below 50 damp the same landform into
+  // gentler, more buildable country; values above 50 add sharper relief.
+  const amplitude = 14 * (1 - calm * 0.72) * (1 + rough * 1.8);
+  const ridgeWeight = 0.16 + rough * 0.72;
+  const freq = (2.0 - calm * 0.45 + rough * 0.85) / (2 * half);
+  const warpAmp = 9 * (1 - calm * 0.68) + rough * 15;
 
   // Boundary tendencies. Rugged/defended worlds tend to close with ridges and
   // escarpments; wet worlds tend to close with lower marshy edges. Both are
   // continuous responses to the edge field, not visible modes.
   const water = frac(params.waterPresence);
   const defense = frac(params.defensePressure);
-  const highlandTendency = Math.max(0, Math.min(1, rugged * 0.75 + defense * 0.25 - water * 0.35));
-  const wetlandTendency = Math.max(0, Math.min(1, water * 0.8 - rugged * 0.25 + rng.jitter(0.12)));
+  const highlandTendency = Math.max(0, Math.min(1, rough * 0.78 + defense * 0.18 - water * 0.35));
+  const wetlandTendency = Math.max(
+    0,
+    Math.min(1, water * 0.75 + calm * 0.18 - rough * 0.28 + rng.jitter(0.12)),
+  );
   const boundaryPhase = rng.range(0, Math.PI * 2);
   const boundaryLobes = rng.int(3, 7);
 
@@ -81,15 +83,6 @@ export function generateTerrain(seedValue: number, params: WorldParams): Terrain
       let h = (base - 0.5) * amplitude;
       h += (ridge - 0.35) * amplitude * ridgeWeight;
 
-      // Central knoll (gaussian-ish bump).
-      const r = Math.hypot(x, z);
-      const knoll = Math.exp(-(r * r) / (2 * knollRadius * knollRadius));
-      h += knoll * knollHeight;
-
-      // Gently lower the immediate center so the knoll has a readable platform
-      // top rather than a sharp peak.
-      h -= knoll * knoll * knollHeight * 0.22;
-
       // Boundary pressure: as a point approaches the finite edge, terrain
       // becomes less buildable and more environmental. It may become ridged,
       // marshy or simply fade down into fog depending on the same parameters
@@ -114,7 +107,7 @@ export function generateTerrain(seedValue: number, params: WorldParams): Terrain
         (0.5 + 0.5 * (1 - ridgePatch) + 0.45 * boundaryNoise);
       h += ridgeHeight;
       h -= wetLowering;
-      h -= outer * (amplitude * lerp(0.75, 1.35, rugged) + lerp(18, 34, 1 - wetlandTendency));
+      h -= outer * (amplitude * lerp(0.55, 1.25, rugged) + lerp(14, 28, 1 - wetlandTendency));
 
       heights[idx(GRID, i, j)] = h;
       if (h < minH) minH = h;

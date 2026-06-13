@@ -13,8 +13,8 @@ import { ValueNoise2D } from './noise';
 import { Rng } from './rng';
 import { frac, type WorldParams } from './params';
 import {
-  cellToWorld,
   distance,
+  heightStatsInRadius,
   idx,
   lerp,
   sampleHeight,
@@ -91,28 +91,6 @@ function inWater(terrain: TerrainData, water: WaterData, p: Vec2): boolean {
   return water.mask[idx(terrain.size, i, j)] === 1;
 }
 
-/** Gently flatten terrain under a footprint so buildings sit, not float. */
-function terrace(terrain: TerrainData, p: Vec2, radius: number, target: number): void {
-  const { size } = terrain;
-  const f = worldToCellF(terrain, p.x, p.z);
-  const span = Math.ceil(radius / terrain.cellSize) + 1;
-  const ci = clampInt(Math.round(f.fi), 0, size - 1);
-  const cj = clampInt(Math.round(f.fj), 0, size - 1);
-  for (let dj = -span; dj <= span; dj++) {
-    for (let di = -span; di <= span; di++) {
-      const i = ci + di;
-      const j = cj + dj;
-      if (i < 0 || j < 0 || i >= size || j >= size) continue;
-      const w = cellToWorld(terrain, i, j);
-      const d = distance(w, p);
-      if (d > radius) continue;
-      const k = idx(size, i, j);
-      const blend = 0.85 * (1 - smoothstep(radius * 0.4, radius, d));
-      terrain.heights[k] = lerp(terrain.heights[k], target, blend);
-    }
-  }
-}
-
 export function generateSettlement(
   seedValue: number,
   params: WorldParams,
@@ -151,7 +129,7 @@ export function generateSettlement(
     Math.atan2(Math.cos(approachDir), Math.sin(approachDir)) + Math.PI,
     params,
   );
-  terrace(terrain, monument.position, buildingPlanRadius(monument) * 1.12, monument.ground);
+  applyFoundationFit(terrain, monument, params);
   buildings.push(monument);
   placed.push({
     pos: monument.position,
@@ -174,7 +152,7 @@ export function generateSettlement(
   };
   plazas.push(civic);
   placed.push({ pos: civic.center, radius: civic.radius * 0.8 });
-  addAccessAndTerrace(
+  addAccess(
     terrain,
     accesses,
     monument,
@@ -374,7 +352,12 @@ export function generateSettlement(
     const slope = slopeAt(terrain, finalPos.x, finalPos.z);
     if (slope > lerp(0.9, 0.55, frac(params.terrainRuggedness))) continue;
 
-    const ground = isWaterside ? water.level : sampleHeight(terrain, finalPos.x, finalPos.z);
+    const terrainFit = isWaterside
+      ? undefined
+      : buildingTerrainFit(terrain, finalPos, footprintRadius(role, footprint), role, params);
+    if (!isWaterside && !terrainFit) continue;
+
+    const ground = isWaterside ? water.level : terrainFit!.ground;
     const refineNoise = weather.fbm(finalPos.x * 0.05 + 5, finalPos.z * 0.05 - 2, 3);
     const building = makeBuilding(
       rng,
@@ -388,6 +371,8 @@ export function generateSettlement(
       refineNoise,
       isWaterside ? water.level : 0,
     );
+    if (terrainFit) building.foundationDepth = terrainFit.foundationDepth;
+    else if (building.stiltHeight <= 0) applyFoundationFit(terrain, building, params);
     const terraceRadius = buildingPlanRadius(building);
     const radius = terraceRadius * 0.86;
     let clash = false;
@@ -400,8 +385,7 @@ export function generateSettlement(
     }
     if (clash) continue;
 
-    if (!isWaterside) terrace(terrain, finalPos, terraceRadius * 1.1, ground);
-    addAccessAndTerrace(terrain, accesses, building, { ...cand, pos: finalPos }, params);
+    addAccess(terrain, accesses, building, { ...cand, pos: finalPos }, params);
     buildings.push(building);
     placed.push({ pos: finalPos, radius });
     nextId += 1;
@@ -493,6 +477,44 @@ function buildingPlanRadius(b: Building): number {
   return radius;
 }
 
+function footprintRadius(role: BuildingRole, fp: Footprint): number {
+  const base = Math.max(fp.w, fp.d);
+  if (role === 'monument') return base * 0.72;
+  if (role === 'hall' || role === 'waterside' || role === 'bridgehouse') return base * 0.64;
+  return base * 0.56;
+}
+
+function maxFootprintRelief(role: BuildingRole, radius: number, params: WorldParams): number {
+  const rugged = frac(params.terrainRuggedness);
+  const sizePenalty = Math.max(0, radius - 5) * 0.18;
+  const base = role === 'monument' ? 4.8 : role === 'tower' ? 4.2 : 3.6;
+  return Math.max(1.4, base + rugged * 4.2 - sizePenalty);
+}
+
+function buildingTerrainFit(
+  terrain: TerrainData,
+  pos: Vec2,
+  radius: number,
+  role: BuildingRole,
+  params: WorldParams,
+): { ground: number; foundationDepth: number } | undefined {
+  const stats = heightStatsInRadius(terrain, pos, radius);
+  const maxRelief = maxFootprintRelief(role, radius, params);
+  if (stats.range > maxRelief) return undefined;
+  return {
+    ground: stats.max + 0.08,
+    foundationDepth: Math.max(1.2, stats.range + 0.75),
+  };
+}
+
+function applyFoundationFit(terrain: TerrainData, building: Building, params: WorldParams): void {
+  const radius = buildingPlanRadius(building) * 0.9;
+  const fit = buildingTerrainFit(terrain, building.position, radius, building.role, params);
+  const stats = heightStatsInRadius(terrain, building.position, radius);
+  building.ground = fit?.ground ?? stats.max + 0.08;
+  building.foundationDepth = fit?.foundationDepth ?? Math.max(1.4, stats.range + 0.85);
+}
+
 function insideTerrain(terrain: TerrainData, p: Vec2, margin: number): boolean {
   const limit = terrain.half - margin;
   return Math.abs(p.x) < limit && Math.abs(p.z) < limit;
@@ -567,8 +589,8 @@ function accessMaterial(
   return 'dirt';
 }
 
-function addAccessAndTerrace(
-  terrain: TerrainData,
+function addAccess(
+  _terrain: TerrainData,
   accesses: BuildingAccess[],
   building: Building,
   cand: Candidate,
@@ -594,52 +616,6 @@ function addAccessAndTerrace(
     material: accessMaterial(building, cand.source, params),
   };
   accesses.push(access);
-  if (building.stiltHeight <= 0) terraceAccess(terrain, access, building.ground);
-}
-
-function terraceAccess(terrain: TerrainData, access: BuildingAccess, startGround: number): void {
-  const { size } = terrain;
-  const minX = Math.min(access.start.x, access.end.x) - access.width * 2.2;
-  const maxX = Math.max(access.start.x, access.end.x) + access.width * 2.2;
-  const minZ = Math.min(access.start.z, access.end.z) - access.width * 2.2;
-  const maxZ = Math.max(access.start.z, access.end.z) + access.width * 2.2;
-  const f0 = worldToCellF(terrain, minX, minZ);
-  const f1 = worldToCellF(terrain, maxX, maxZ);
-  const i0 = clampInt(Math.floor(Math.min(f0.fi, f1.fi)), 0, size - 1);
-  const i1 = clampInt(Math.ceil(Math.max(f0.fi, f1.fi)), 0, size - 1);
-  const j0 = clampInt(Math.floor(Math.min(f0.fj, f1.fj)), 0, size - 1);
-  const j1 = clampInt(Math.ceil(Math.max(f0.fj, f1.fj)), 0, size - 1);
-  const endGround = sampleHeight(terrain, access.end.x, access.end.z);
-  const radius = access.width * 0.65 + 0.75;
-
-  for (let j = j0; j <= j1; j++) {
-    for (let i = i0; i <= i1; i++) {
-      const p = cellToWorld(terrain, i, j);
-      const nearest = nearestOnSegment(p, access.start, access.end);
-      if (nearest.distance > radius) continue;
-      const k = idx(size, i, j);
-      const target = lerp(startGround, endGround, nearest.t);
-      const blend = 0.7 * (1 - smoothstep(access.width * 0.3, radius, nearest.distance));
-      terrain.heights[k] = lerp(terrain.heights[k], target, blend);
-    }
-  }
-}
-
-function nearestOnSegment(
-  p: Vec2,
-  a: Vec2,
-  b: Vec2,
-): {
-  t: number;
-  distance: number;
-} {
-  const dx = b.x - a.x;
-  const dz = b.z - a.z;
-  const l2 = dx * dx + dz * dz || 1;
-  const t = clamp01(((p.x - a.x) * dx + (p.z - a.z) * dz) / l2);
-  const x = a.x + dx * t;
-  const z = a.z + dz * t;
-  return { t, distance: Math.hypot(p.x - x, p.z - z) };
 }
 
 // --------------------------------------------------------------------------
@@ -761,6 +737,7 @@ function makeMonument(
     turrets,
     hasChimney: false,
     stiltHeight: 0,
+    foundationDepth: 1.6,
     storeys,
   };
 }
@@ -841,6 +818,7 @@ function makeBuilding(
     turrets,
     hasChimney,
     stiltHeight,
+    foundationDepth: stiltHeight > 0 ? 0.6 : 1.6,
     storeys,
   };
 }

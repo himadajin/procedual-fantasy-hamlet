@@ -7,7 +7,7 @@
  */
 import { Rng } from './rng';
 import { frac, type WorldParams } from './params';
-import { cellToWorld, idx, sampleHeight, slopeAt } from './grid';
+import { cellToWorld, heightStatsInRadius, idx, lerp, sampleHeight, slopeAt } from './grid';
 import type { TerrainData, Vec2, WaterData } from './types';
 
 export interface CenterResult {
@@ -25,8 +25,12 @@ export function pickCenter(
 ): CenterResult {
   const rng = new Rng(seedValue).fork('center');
   const defense = frac(params.defensePressure);
+  const monumentality = frac(params.monumentality);
+  const rugged = frac(params.terrainRuggedness);
   const waterAffinity = frac(params.waterPresence);
   const { size, half } = terrain;
+  const footprintRadius = lerp(10, 18, monumentality);
+  const maxRelief = lerp(4.2, 9.5, rugged);
 
   // Precompute a coarse distance-to-water field via multi-source BFS-ish
   // expansion on the grid (Chebyshev steps are good enough for siting).
@@ -53,9 +57,11 @@ export function pickCenter(
       const h = terrain.heights[k];
       const elev = (h - minH) / span; // 0..1
       const slope = slopeAt(terrain, w.x, w.z);
+      const relief = heightStatsInRadius(terrain, w, footprintRadius).range;
 
       // Buildable: punish steep ground hard.
       if (slope > 0.85) continue;
+      if (relief > maxRelief) continue;
 
       const wd = waterDist[k]; // grid cells to nearest water
       const wdWorld = wd * terrain.cellSize;
@@ -66,13 +72,19 @@ export function pickCenter(
       const elevation = elev * (0.4 + 0.9 * defense);
       // Flatness is always nice for a big footprint.
       const flatness = 1 - Math.min(1, slope / 0.85);
+      const footprintFit = 1 - Math.min(1, relief / maxRelief);
       // Waterfront pull: when water presence is high, reward being near (but
       // not in) the water — a band a little back from the shore.
       const shoreBand = Math.exp(-Math.pow((wdWorld - 10) / 12, 2));
       const waterfront = waterAffinity > 0.45 ? shoreBand * waterAffinity * 0.9 : 0;
 
       const score =
-        centrality * 1.0 + elevation * 1.1 + flatness * 0.8 + waterfront + rng.next() * 0.12; // tiny seeded tie-breaker
+        centrality * 1.0 +
+        elevation * 1.1 +
+        flatness * 0.65 +
+        footprintFit * 0.7 +
+        waterfront +
+        rng.next() * 0.12; // tiny seeded tie-breaker
 
       if (score > best) {
         best = score;

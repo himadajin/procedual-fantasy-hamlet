@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { generateWorld } from './generate';
 import { DEFAULT_PARAMS, DEFAULT_SEED, type WorldParams } from './params';
 import { Rng } from './rng';
+import { generateTerrain } from './terrain';
+import { heightStatsInRadius } from './grid';
 
 function fingerprint(world: ReturnType<typeof generateWorld>): string {
   const parts: (number | string)[] = [
@@ -56,6 +58,36 @@ function localZ(
   const dx = p.x - building.position.x;
   const dz = p.z - building.position.z;
   return dx * Math.sin(building.rotation) + dz * Math.cos(building.rotation);
+}
+
+function buildingPlanRadius(
+  building: ReturnType<typeof generateWorld>['buildings'][number],
+): number {
+  return building.tiers.reduce(
+    (radius, tier) =>
+      Math.max(
+        radius,
+        Math.hypot(tier.offsetX, tier.offsetZ) + Math.max(tier.width, tier.depth) * 0.62,
+      ),
+    0,
+  );
+}
+
+function averageInnerRelief(params: WorldParams): number {
+  const terrain = generateTerrain(1234, params);
+  let total = 0;
+  let count = 0;
+  const step = 12;
+  for (let j = step; j < terrain.size - step; j += step) {
+    for (let i = step; i < terrain.size - step; i += step) {
+      const x = -terrain.half + i * terrain.cellSize;
+      const z = -terrain.half + j * terrain.cellSize;
+      if (Math.hypot(x, z) > terrain.half * 0.68) continue;
+      total += heightStatsInRadius(terrain, { x, z }, terrain.cellSize * 3).range;
+      count += 1;
+    }
+  }
+  return total / Math.max(1, count);
 }
 
 describe('deterministic generation', () => {
@@ -155,6 +187,10 @@ describe('default world is a believable fortified settlement', () => {
 describe('parameters actually change the world', () => {
   const base: WorldParams = { ...DEFAULT_PARAMS };
 
+  it('uses terrain ruggedness 50 as the ordinary default baseline', () => {
+    expect(DEFAULT_PARAMS.terrainRuggedness).toBe(50);
+  });
+
   it('settlement pressure increases building count', () => {
     const low = generateWorld({ seed: 'x', params: { ...base, settlementPressure: 5 } });
     const high = generateWorld({ seed: 'x', params: { ...base, settlementPressure: 100 } });
@@ -196,12 +232,35 @@ describe('parameters actually change the world', () => {
     expect(large.half).toBeGreaterThan(small.half);
   });
 
+  it('terrain ruggedness changes landform relief around the 50 baseline', () => {
+    const calm = averageInnerRelief({ ...base, terrainRuggedness: 0 });
+    const ordinary = averageInnerRelief({ ...base, terrainRuggedness: 50 });
+    const rugged = averageInnerRelief({ ...base, terrainRuggedness: 100 });
+
+    expect(calm).toBeLessThan(ordinary);
+    expect(rugged).toBeGreaterThan(ordinary);
+  });
+
   it('monumentality grows the central building', () => {
     const low = generateWorld({ seed: 'x', params: { ...base, monumentality: 0 } });
     const high = generateWorld({ seed: 'x', params: { ...base, monumentality: 100 } });
     const lowM = low.buildings.find((b) => b.role === 'monument')!;
     const highM = high.buildings.find((b) => b.role === 'monument')!;
     expect(highM.tiers[0].width).toBeGreaterThan(lowM.tiers[0].width);
+  });
+});
+
+describe('terrain-first building fit', () => {
+  it('uses foundations rather than terrain terracing to absorb accepted footprint relief', () => {
+    const world = generateWorld({ seed: DEFAULT_SEED, params: DEFAULT_PARAMS });
+
+    for (const building of world.buildings) {
+      if (building.stiltHeight > 0) continue;
+      const radius = buildingPlanRadius(building) * 0.9;
+      const relief = heightStatsInRadius(world.terrain, building.position, radius).range;
+
+      expect(building.foundationDepth).toBeGreaterThanOrEqual(relief - 0.05);
+    }
   });
 });
 

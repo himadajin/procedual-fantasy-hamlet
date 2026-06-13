@@ -13,9 +13,9 @@ export interface WorldParams {
   defensePressure: number;
   /** Material quality, tidiness, roof/window/beam refinement, plaza neatness. */
   prosperity: number;
-  /** Hills, cliffs, terraces, slope severity, where buildings can sit. */
+  /** 50 = ordinary hills; lower eases buildability, higher fragments it. */
   terrainRuggedness: number;
-  /** Rivers, ponds, lake-like water, moats, bridges, shoreline, waterside building. */
+  /** How strongly watersides participate in structure, not raw water volume. */
   waterPresence: number;
   /** Size, rank and presence of the central monument; how space gathers around it. */
   monumentality: number;
@@ -59,13 +59,13 @@ export const PARAM_META: readonly ParamMeta[] = [
     key: 'terrainRuggedness',
     label: 'Terrain Ruggedness',
     jp: '起伏の強さ',
-    blurb: 'Hills, cliffs and terraces that steer roads and footprints.',
+    blurb: 'Below 50 is gentler; above 50 splits buildable land.',
   },
   {
     key: 'waterPresence',
     label: 'Water Presence',
     jp: '水辺の強さ',
-    blurb: 'Rivers, ponds, moats, bridges and waterside architecture.',
+    blurb: 'How strongly shores, bridges and water defenses shape the world.',
   },
   {
     key: 'monumentality',
@@ -80,7 +80,7 @@ export const DEFAULT_PARAMS: WorldParams = {
   settlementPressure: 55,
   defensePressure: 70,
   prosperity: 60,
-  terrainRuggedness: 55,
+  terrainRuggedness: 50,
   waterPresence: 70,
   monumentality: 75,
 };
@@ -94,6 +94,11 @@ export function frac(value: number): number {
 
 export function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** Map a 0..100 parameter onto a signed -1..1 deviation around the ordinary value 50. */
+export function signedFromMid(value: number): number {
+  return clamp01(value / 100) * 2 - 1;
 }
 
 export function clampParam(v: number): number {

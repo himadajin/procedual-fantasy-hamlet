@@ -63,9 +63,10 @@ export function generateWater(
   }
   const basinArr = Float32Array.from(basin);
 
-  // Water surface level: higher water presence floods more of the basin.
+  // Water presence is structural participation, not a raw "fill the map"
+  // amount. Higher values adopt more low ground into water systems, while the
+  // center phase later chooses dry, buildable land from the resulting terrain.
   const targetCoverage = lerp(0.0, 0.34, water);
-  // Keep the surface below the typical land so the center knoll stays dry.
   const level = quantile(basinArr, Math.max(0.04, targetCoverage));
 
   // Flood low ground inside the basin only.

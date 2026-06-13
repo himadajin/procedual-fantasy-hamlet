@@ -107,7 +107,7 @@ export interface Building {
   role: BuildingRole;
   /** World position of the building origin (footprint center). */
   position: Vec2;
-  /** Ground elevation the building sits on (terraced). */
+  /** Base elevation chosen from the existing terrain; foundation absorbs small relief. */
   ground: number;
   /** Facing angle in radians (0 = facing +Z), where the entrance looks. */
   rotation: number;
@@ -125,6 +125,8 @@ export interface Building {
   hasChimney: boolean;
   /** For waterside buildings: stilt foundation height above water bed. */
   stiltHeight: number;
+  /** For land buildings: plinth depth needed to reach existing local terrain. */
+  foundationDepth: number;
   /** Approx storeys, used to seed window rows. */
   storeys: number;
 }

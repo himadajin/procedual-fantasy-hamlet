@@ -61,6 +61,7 @@ function roofYawBuilding(): Building {
     turrets: 0,
     hasChimney: false,
     stiltHeight: 0,
+    foundationDepth: 1.6,
     storeys: 2,
   };
 }

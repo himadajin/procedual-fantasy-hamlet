@@ -601,7 +601,7 @@ function addBuilding(m: Mesher, b: Building, terrain: TerrainData): void {
   }
 
   // Foundation plinth: from a bit below ground up to ground, covering footprint.
-  const skirt = b.stiltHeight > 0 ? 0.6 : 1.6;
+  const skirt = b.stiltHeight > 0 ? 0.6 : Math.max(1.2, b.foundationDepth);
   for (const tier of b.tiers) {
     const { x, z } = tierWorld(b, tier);
     m.box(
