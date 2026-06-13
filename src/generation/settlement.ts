@@ -498,6 +498,8 @@ function makeMonument(
     baseOffset: 0,
     offsetX: 0,
     offsetZ: 0,
+    roof,
+    roofYaw: 0,
   };
   const highCore = {
     width: fp.w * 0.44,
@@ -506,6 +508,8 @@ function makeMonument(
     baseOffset: 0,
     offsetX: 0,
     offsetZ: -fp.d * 0.06,
+    roof,
+    roofYaw: 0,
   };
   const frontPorch = {
     width: fp.w * lerp(0.32, 0.42, prosperity),
@@ -514,6 +518,8 @@ function makeMonument(
     baseOffset: 0,
     offsetX: 0,
     offsetZ: fp.d * 0.48,
+    roof: 'gable' as RoofKind,
+    roofYaw: roofYawForFootprint(fp.w, fp.d * 0.22),
   };
   const sideSign = rng.chance(0.5) ? 1 : -1;
   const sideWing = {
@@ -523,6 +529,8 @@ function makeMonument(
     baseOffset: 0,
     offsetX: sideSign * fp.w * 0.5,
     offsetZ: rng.jitter(fp.d * 0.12),
+    roof: rng.chance(0.55) ? ('hip' as RoofKind) : ('gable' as RoofKind),
+    roofYaw: Math.PI / 2,
   };
   const counterWing = {
     width: fp.w * lerp(0.24, 0.34, monumentality),
@@ -531,6 +539,8 @@ function makeMonument(
     baseOffset: 0,
     offsetX: -sideSign * fp.w * 0.46,
     offsetZ: fp.d * lerp(-0.2, 0.18, water),
+    roof: 'gable' as RoofKind,
+    roofYaw: Math.PI / 2,
   };
   const tiers = [broadBase, highCore, frontPorch, sideWing, counterWing];
 
@@ -655,6 +665,7 @@ function makeGenericTiers(
       baseOffset: 0,
       offsetX: 0,
       offsetZ: 0,
+      roofYaw: roofYawForFootprint(fp.w, fp.d),
     },
   ];
 
@@ -666,6 +677,8 @@ function makeGenericTiers(
     height: number,
     offsetX: number,
     offsetZ: number,
+    roof: RoofKind,
+    roofYaw = roofYawForFootprint(width, depth),
   ): void => {
     tiers.push({
       width,
@@ -674,6 +687,8 @@ function makeGenericTiers(
       baseOffset: 0,
       offsetX,
       offsetZ,
+      roof,
+      roofYaw,
     });
   };
 
@@ -693,6 +708,8 @@ function makeGenericTiers(
       bodyHeight * rng.range(0.62, 0.82),
       sideSign * (fp.w / 2 + crossW / 2 - sideOverlap),
       rng.jitter(fp.d * 0.12),
+      rng.chance(0.55) ? 'gable' : 'hip',
+      Math.PI / 2,
     );
 
     const porchD = fp.d * rng.range(0.18, 0.28);
@@ -702,6 +719,7 @@ function makeGenericTiers(
       bodyHeight * rng.range(0.42, 0.58),
       0,
       fp.d / 2 + porchD / 2 - frontOverlap,
+      'gable',
     );
 
     if (prosperity > 0.45 && rng.chance(0.45 + complexity * 0.35)) {
@@ -712,6 +730,7 @@ function makeGenericTiers(
         bodyHeight * rng.range(0.48, 0.64),
         -sideSign * fp.w * rng.range(0.08, 0.22),
         -fp.d / 2 - serviceD / 2 + frontOverlap,
+        rng.chance(0.7) ? 'gable' : 'shed',
       );
     }
     return tiers;
@@ -727,6 +746,7 @@ function makeGenericTiers(
       shoulderH,
       fp.w / 2 + shoulderW / 2 - sideOverlap,
       rng.jitter(fp.d * 0.08),
+      defense > 0.55 ? 'pyramid' : 'hip',
     );
     if (defense > 0.45 || rng.chance(complexity)) {
       addAttached(
@@ -735,6 +755,7 @@ function makeGenericTiers(
         shoulderH * rng.range(0.88, 1.1),
         -fp.w / 2 - shoulderW / 2 + sideOverlap,
         rng.jitter(fp.d * 0.08),
+        defense > 0.55 ? 'pyramid' : 'hip',
       );
     }
     return tiers;
@@ -748,6 +769,7 @@ function makeGenericTiers(
       bodyHeight * rng.range(0.42, 0.62),
       rng.jitter(fp.w * 0.1),
       fp.d / 2 + galleryD / 2 - frontOverlap,
+      rng.chance(0.6) ? 'shed' : 'gable',
     );
     if (water > 0.55 && rng.chance(0.35 + complexity * 0.45)) {
       const sideW = fp.w * rng.range(0.34, 0.5);
@@ -758,6 +780,8 @@ function makeGenericTiers(
         bodyHeight * rng.range(0.46, 0.66),
         sideSign * (fp.w / 2 + sideW / 2 - sideOverlap),
         -fp.d * rng.range(0.05, 0.18),
+        'gable',
+        Math.PI / 2,
       );
     }
     return tiers;
@@ -773,6 +797,7 @@ function makeGenericTiers(
         bodyHeight * rng.range(0.36, 0.58),
         sideSign * fp.w * rng.range(0.08, 0.24),
         -fp.d / 2 - shedD / 2 + frontOverlap,
+        'shed',
       );
     }
     return tiers;
@@ -788,6 +813,7 @@ function makeGenericTiers(
         bodyHeight * rng.range(0.34, 0.5),
         sideSign * (fp.w / 2 + leanW / 2 - sideOverlap),
         -fp.d * rng.range(0.05, 0.2),
+        'shed',
       );
     }
     return tiers;
@@ -804,6 +830,8 @@ function makeGenericTiers(
       bodyHeight * rng.range(0.52, 0.82),
       sideSign * (fp.w / 2 + wingW / 2 - sideOverlap),
       rng.jitter(fp.d * 0.16),
+      'gable',
+      Math.PI / 2,
     );
   }
 
@@ -815,6 +843,7 @@ function makeGenericTiers(
       bodyHeight * rng.range(0.38, 0.56),
       rng.jitter(fp.w * 0.12),
       fp.d / 2 + bayD / 2 - frontOverlap,
+      'gable',
     );
   }
 
@@ -826,10 +855,15 @@ function makeGenericTiers(
       bodyHeight * rng.range(0.36, 0.52),
       -sideSign * fp.w * rng.range(0.08, 0.24),
       -fp.d / 2 - serviceD / 2 + frontOverlap,
+      rng.chance(0.65) ? 'shed' : 'gable',
     );
   }
 
   return tiers;
+}
+
+function roofYawForFootprint(width: number, depth: number): number {
+  return width > depth * 1.15 ? Math.PI / 2 : 0;
 }
 
 function clamp01(v: number): number {

@@ -81,6 +81,10 @@ export interface BuildingTier {
   /** Local center offset relative to the building origin (for L/T plans). */
   offsetX: number;
   offsetZ: number;
+  /** Optional per-mass roof override; falls back to the building roof. */
+  roof?: RoofKind;
+  /** Local yaw offset for this mass roof, relative to building rotation. */
+  roofYaw?: number;
 }
 
 export interface Building {

@@ -102,6 +102,49 @@ export class Mesher {
     this.idx.push(i0, i1, i2);
   }
 
+  private quadFacing(
+    a: [number, number, number],
+    b: [number, number, number],
+    c: [number, number, number],
+    d: [number, number, number],
+    color: RGB,
+    desired: { x: number; y: number; z: number },
+  ): void {
+    const ux = b[0] - a[0];
+    const uy = b[1] - a[1];
+    const uz = b[2] - a[2];
+    const vx = d[0] - a[0];
+    const vy = d[1] - a[1];
+    const vz = d[2] - a[2];
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const dot = nx * desired.x + ny * desired.y + nz * desired.z;
+    if (dot >= 0) this.quad(...a, ...b, ...c, ...d, color);
+    else this.quad(...d, ...c, ...b, ...a, color);
+  }
+
+  private triangleFacing(
+    a: [number, number, number],
+    b: [number, number, number],
+    c: [number, number, number],
+    color: RGB,
+    desired: { x: number; y: number; z: number },
+  ): void {
+    const ux = b[0] - a[0];
+    const uy = b[1] - a[1];
+    const uz = b[2] - a[2];
+    const vx = c[0] - a[0];
+    const vy = c[1] - a[1];
+    const vz = c[2] - a[2];
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const dot = nx * desired.x + ny * desired.y + nz * desired.z;
+    if (dot >= 0) this.triangle(...a, ...b, ...c, color);
+    else this.triangle(...c, ...b, ...a, color);
+  }
+
   /** Axis-aligned box, optionally rotated about Y around its own center. */
   box(
     cx: number,
@@ -166,6 +209,11 @@ export class Mesher {
       baseY + ly,
       cz - lx * sin + lz * cos,
     ];
+    const dir = (lx: number, ly: number, lz: number): { x: number; y: number; z: number } => ({
+      x: lx * cos + lz * sin,
+      y: ly,
+      z: -lx * sin + lz * cos,
+    });
     const eaveL0 = c(-hx, 0, -hz);
     const eaveL1 = c(-hx, 0, hz);
     const eaveR0 = c(hx, 0, -hz);
@@ -173,11 +221,11 @@ export class Mesher {
     const ridge0 = c(0, height, -hz);
     const ridge1 = c(0, height, hz);
     // Two slopes.
-    this.quad(...eaveL0, ...eaveL1, ...ridge1, ...ridge0, color);
-    this.quad(...eaveR1, ...eaveR0, ...ridge0, ...ridge1, color);
+    this.quadFacing(eaveL0, eaveL1, ridge1, ridge0, color, dir(-height, hx, 0));
+    this.quadFacing(eaveR1, eaveR0, ridge0, ridge1, color, dir(height, hx, 0));
     // Two gable end triangles.
-    this.triangle(...eaveL0, ...ridge0, ...eaveR0, color);
-    this.triangle(...eaveR1, ...ridge1, ...eaveL1, color);
+    this.triangleFacing(eaveL0, ridge0, eaveR0, color, dir(0, 0.2, -1));
+    this.triangleFacing(eaveR1, ridge1, eaveL1, color, dir(0, 0.2, 1));
   }
 
   /** Hip roof: 4 slopes meeting at a short ridge (ridgeFrac of depth). */
@@ -203,6 +251,11 @@ export class Mesher {
       baseY + ly,
       cz - lx * sin + lz * cos,
     ];
+    const dir = (lx: number, ly: number, lz: number): { x: number; y: number; z: number } => ({
+      x: lx * cos + lz * sin,
+      y: ly,
+      z: -lx * sin + lz * cos,
+    });
     const e00 = c(-hx, 0, -hz); // -x, -z
     const e01 = c(-hx, 0, hz); //  -x, +z
     const e10 = c(hx, 0, -hz); //   +x, -z
@@ -210,11 +263,11 @@ export class Mesher {
     const r0 = c(0, height, -rz);
     const r1 = c(0, height, rz);
     // Left and right trapezoidal slopes.
-    this.quad(...e00, ...e01, ...r1, ...r0, color);
-    this.quad(...e11, ...e10, ...r0, ...r1, color);
+    this.quadFacing(e00, e01, r1, r0, color, dir(-height, hx, 0));
+    this.quadFacing(e11, e10, r0, r1, color, dir(height, hx, 0));
     // Two triangular hip ends.
-    this.triangle(...e10, ...e00, ...r0, color);
-    this.triangle(...e01, ...e11, ...r1, color);
+    this.triangleFacing(e10, e00, r0, color, dir(0, 0.25, -1));
+    this.triangleFacing(e01, e11, r1, color, dir(0, 0.25, 1));
   }
 
   /** Pyramid / spire roof to an apex. */
@@ -238,15 +291,20 @@ export class Mesher {
       baseY + ly,
       cz - lx * sin + lz * cos,
     ];
+    const dir = (lx: number, ly: number, lz: number): { x: number; y: number; z: number } => ({
+      x: lx * cos + lz * sin,
+      y: ly,
+      z: -lx * sin + lz * cos,
+    });
     const e00 = c(-hx, 0, -hz);
     const e10 = c(hx, 0, -hz);
     const e11 = c(hx, 0, hz);
     const e01 = c(-hx, 0, hz);
     const apex = c(0, height, 0);
-    this.triangle(...e00, ...e10, ...apex, color);
-    this.triangle(...e10, ...e11, ...apex, color);
-    this.triangle(...e11, ...e01, ...apex, color);
-    this.triangle(...e01, ...e00, ...apex, color);
+    this.triangleFacing(e00, e10, apex, color, dir(0, 0.35, -1));
+    this.triangleFacing(e10, e11, apex, color, dir(1, 0.35, 0));
+    this.triangleFacing(e11, e01, apex, color, dir(0, 0.35, 1));
+    this.triangleFacing(e01, e00, apex, color, dir(-1, 0.35, 0));
   }
 
   /** Vertical cylinder (sides only by default). */
@@ -268,8 +326,15 @@ export class Mesher {
         z0 = cz + Math.sin(a0) * radius;
       const x1 = cx + Math.cos(a1) * radius,
         z1 = cz + Math.sin(a1) * radius;
-      this.quad(x0, cy, z0, x1, cy, z1, x1, top, z1, x0, top, z0, color);
-      if (cap) this.triangle(x0, top, z0, x1, top, z1, cx, top, cz, color);
+      const mid = (a0 + a1) / 2;
+      const out = { x: Math.cos(mid), y: 0, z: Math.sin(mid) };
+      this.quadFacing([x0, cy, z0], [x1, cy, z1], [x1, top, z1], [x0, top, z0], color, out);
+      if (cap)
+        this.triangleFacing([x0, top, z0], [x1, top, z1], [cx, top, cz], color, {
+          x: 0,
+          y: 1,
+          z: 0,
+        });
     }
   }
 
@@ -291,7 +356,12 @@ export class Mesher {
         z0 = cz + Math.sin(a0) * radius;
       const x1 = cx + Math.cos(a1) * radius,
         z1 = cz + Math.sin(a1) * radius;
-      this.triangle(x0, baseY, z0, x1, baseY, z1, cx, apexY, cz, color);
+      const mid = (a0 + a1) / 2;
+      this.triangleFacing([x0, baseY, z0], [x1, baseY, z1], [cx, apexY, cz], color, {
+        x: Math.cos(mid),
+        y: radius / Math.max(height, 0.001),
+        z: Math.sin(mid),
+      });
     }
   }
 

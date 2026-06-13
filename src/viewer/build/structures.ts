@@ -250,11 +250,12 @@ function addTimberFrame(
 function addRoof(m: Mesher, b: Building, tier: BuildingTier, baseY: number): void {
   const { x: cx, z: cz } = tierWorld(b, tier);
   const col = roofColor(b);
-  const rot = b.rotation;
+  const rot = b.rotation + (tier.roofYaw ?? roofYawForFootprint(tier.width, tier.depth));
+  const roof = tier.roof ?? b.roof;
   const w = tier.width;
   const d = tier.depth;
   const rh = tierRoofHeight(b, tier);
-  switch (b.roof) {
+  switch (roof) {
     case 'gable':
       m.gableRoof(cx, baseY, cz, w, d, rh, rot, b.overhang, col);
       break;
@@ -276,15 +277,18 @@ function addRoof(m: Mesher, b: Building, tier: BuildingTier, baseY: number): voi
   }
 }
 
-function tierRoofHeight(b: Building, tier: BuildingTier): number {
-  if (b.role !== 'monument') return b.roofHeight;
+function roofYawForFootprint(width: number, depth: number): number {
+  return width > depth * 1.15 ? Math.PI / 2 : 0;
+}
 
+function tierRoofHeight(b: Building, tier: BuildingTier): number {
   const main = b.tiers[0];
   const mainMin = Math.min(main.width, main.depth);
   const tierMin = Math.min(tier.width, tier.depth);
   const sizeRatio = Math.max(0.25, Math.min(1, tierMin / mainMin));
-  const scaled = b.roofHeight * (0.45 + sizeRatio * 0.55);
-  return Math.min(scaled, tierMin * 0.9);
+  const scaled =
+    b.roofHeight * (b.role === 'monument' ? 0.45 + sizeRatio * 0.55 : 0.55 + sizeRatio * 0.45);
+  return Math.min(scaled, tierMin * (b.role === 'monument' ? 0.9 : 0.72));
 }
 
 function addShedRoof(

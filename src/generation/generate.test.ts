@@ -69,6 +69,14 @@ describe('default world is a believable fortified settlement', () => {
     expect(compound.length / ordinary.length).toBeGreaterThan(0.2);
   });
 
+  it('gives compound building masses their own roof intent', () => {
+    const compound = world.buildings.filter(
+      (b) => b.role !== 'monument' && b.tiers.length > 1 && b.tiers.some((t) => t.roof),
+    );
+    expect(compound.length).toBeGreaterThan(5);
+    expect(compound.some((b) => b.tiers.some((t) => Math.abs(t.roofYaw ?? 0) > 0.1))).toBe(true);
+  });
+
   it('has a substantial set of buildings, not a placeholder handful', () => {
     expect(world.buildings.length).toBeGreaterThan(25);
   });
