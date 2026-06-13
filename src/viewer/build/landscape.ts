@@ -148,7 +148,7 @@ function buildRibbon(m: Mesher, t: TerrainData, road: RoadSegment, prosperity: n
   if (pts.length < 2) return false;
   const color = mix(PALETTE.roadDirt, PALETTE.roadCobble, prosperity);
   const hw = road.width / 2;
-  const lift = 0.18;
+  const lift = 0.3;
   const left: Vec2[] = [];
   const right: Vec2[] = [];
   for (let i = 0; i < pts.length; i++) {
@@ -184,7 +184,7 @@ function buildPlaza(m: Mesher, t: TerrainData, plaza: Plaza, prosperity: number)
   const segs = 14;
   const cx = plaza.center.x;
   const cz = plaza.center.z;
-  const cy = sampleHeight(t, cx, cz) + 0.16;
+  const cy = sampleHeight(t, cx, cz) + 0.28;
   for (let s = 0; s < segs; s++) {
     const a0 = (s / segs) * Math.PI * 2;
     const a1 = ((s + 1) / segs) * Math.PI * 2;
@@ -192,8 +192,8 @@ function buildPlaza(m: Mesher, t: TerrainData, plaza: Plaza, prosperity: number)
     const z0 = cz + Math.sin(a0) * plaza.radius;
     const x1 = cx + Math.cos(a1) * plaza.radius;
     const z1 = cz + Math.sin(a1) * plaza.radius;
-    const y0 = sampleHeight(t, x0, z0) + 0.16;
-    const y1 = sampleHeight(t, x1, z1) + 0.16;
+    const y0 = sampleHeight(t, x0, z0) + 0.28;
+    const y1 = sampleHeight(t, x1, z1) + 0.28;
     m.triangle(cx, cy, cz, x0, y0, z0, x1, y1, z1, color);
   }
 }

@@ -20,6 +20,7 @@ import { Mesher } from './mesher';
 import { PALETTE, mix, shade, wallColor, type RGB } from './palette';
 
 const FRONT = 0;
+type Point3 = [number, number, number];
 
 function tierWorld(b: Building, tier: BuildingTier): { x: number; z: number } {
   const cos = Math.cos(b.rotation);
@@ -80,13 +81,13 @@ function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): v
           Math.sin((cx + faceIdx * 13.1 + cIdx * 7.3 + row * 3.7) * 12.9898) * 43758.5,
         );
         if (hsh - Math.floor(hsh) > rowProb) continue;
-        addPanel(m, faceCx, wy, faceCz, face.out, face.wdir, lx, winW, winH, winColor);
+        addPanel(m, faceCx, wy, faceCz, face.out, face.wdir, lx, winW, winH, winColor, 0.1);
         // Slight lintel/sill trim when refined.
         if (b.refinement > 0.55) {
           addPanel(
             m,
             faceCx,
-            wy + winH * 0.62,
+            wy + winH * 1.18,
             faceCz,
             face.out,
             face.wdir,
@@ -94,6 +95,7 @@ function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): v
             winW * 1.25,
             winH * 0.16,
             trimColor,
+            0.22,
           );
         }
       }
@@ -112,6 +114,7 @@ function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): v
         0.9,
         doorH,
         PALETTE.door,
+        0.12,
       );
     }
   });
@@ -122,7 +125,7 @@ function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): v
   }
 }
 
-/** A thin outward-facing rectangle (window / door / trim) on a wall face. */
+/** A shallow architectural piece (window / door / trim) protruding from a wall face. */
 function addPanel(
   m: Mesher,
   faceCx: number,
@@ -134,16 +137,75 @@ function addPanel(
   halfW: number,
   halfH: number,
   color: RGB,
+  depth = 0.14,
 ): void {
-  const cx = faceCx + wdir.x * lx + out.x * 0.06;
-  const cz = faceCz + wdir.z * lx + out.z * 0.06;
-  const hw = halfW;
-  const hh = halfH;
-  const ax = cx - wdir.x * hw,
-    az = cz - wdir.z * hw;
-  const bx = cx + wdir.x * hw,
-    bz = cz + wdir.z * hw;
-  m.quad(ax, wy - hh, az, bx, wy - hh, bz, bx, wy + hh, bz, ax, wy + hh, az, color);
+  addFaceBox(m, faceCx, wy, faceCz, out, wdir, lx, halfW * 2, halfH * 2, depth, color);
+}
+
+function addFaceBox(
+  m: Mesher,
+  faceCx: number,
+  wy: number,
+  faceCz: number,
+  out: { x: number; z: number },
+  wdir: { x: number; z: number },
+  lx: number,
+  width: number,
+  height: number,
+  depth: number,
+  color: RGB,
+): void {
+  const hw = width / 2;
+  const hh = height / 2;
+  const hd = depth / 2;
+  const centerX = faceCx + wdir.x * lx + out.x * (hd + 0.035);
+  const centerZ = faceCz + wdir.z * lx + out.z * (hd + 0.035);
+  const c = (x: number, y: number, z: number): Point3 => [
+    centerX + wdir.x * x + out.x * z,
+    wy + y,
+    centerZ + wdir.z * x + out.z * z,
+  ];
+
+  const p000 = c(-hw, -hh, -hd);
+  const p100 = c(hw, -hh, -hd);
+  const p110 = c(hw, hh, -hd);
+  const p010 = c(-hw, hh, -hd);
+  const p001 = c(-hw, -hh, hd);
+  const p101 = c(hw, -hh, hd);
+  const p111 = c(hw, hh, hd);
+  const p011 = c(-hw, hh, hd);
+
+  outwardQuad(m, p001, p101, p111, p011, { x: out.x, y: 0, z: out.z }, color);
+  outwardQuad(m, p100, p000, p010, p110, { x: -out.x, y: 0, z: -out.z }, color);
+  outwardQuad(m, p101, p100, p110, p111, { x: wdir.x, y: 0, z: wdir.z }, color);
+  outwardQuad(m, p000, p001, p011, p010, { x: -wdir.x, y: 0, z: -wdir.z }, color);
+  outwardQuad(m, p010, p011, p111, p110, { x: 0, y: 1, z: 0 }, color);
+}
+
+function outwardQuad(
+  m: Mesher,
+  a: Point3,
+  b: Point3,
+  c: Point3,
+  d: Point3,
+  desired: { x: number; y: number; z: number },
+  color: RGB,
+): void {
+  const ux = b[0] - a[0];
+  const uy = b[1] - a[1];
+  const uz = b[2] - a[2];
+  const vx = d[0] - a[0];
+  const vy = d[1] - a[1];
+  const vz = d[2] - a[2];
+  const nx = uy * vz - uz * vy;
+  const ny = uz * vx - ux * vz;
+  const nz = ux * vy - uy * vx;
+  const dot = nx * desired.x + ny * desired.y + nz * desired.z;
+  if (dot >= 0) {
+    m.quad(...a, ...b, ...c, ...d, color);
+  } else {
+    m.quad(...d, ...c, ...b, ...a, color);
+  }
 }
 
 function addTimberFrame(
