@@ -1,36 +1,51 @@
 /**
- * Road phase — the structural skeleton. Roads are routed first; buildings,
- * plazas, gates and bridges hang off them.
+ * Road phase — demand-point graph over terrain.
  *
- * Main approaches run from the center out to rim anchors (future gates) using
- * A* over the terrain, where cost rises with slope (so roads avoid cliffs and
- * follow contours) and with a seeded "windiness" field (so they meander more
- * under defense pressure). A ring road encircles the core; short lanes branch
- * off to thread the settlement. Where a road crosses water, a bridge is born.
+ * Roads are not decorative ribbons. A small set of primary demand nodes
+ * (center, gates, water access and neighborhood centers) is connected through a
+ * terrain-cost graph. Each edge carries importance, clearance and frontage; the
+ * settlement phase reads those values to place buildings without invading the
+ * transport skeleton.
  */
 import { ValueNoise2D } from './noise';
 import { Rng } from './rng';
 import { frac, type WorldParams } from './params';
-import { cellToWorld, distance, idx, sampleHeight, slopeAt, worldToCellF, clampInt } from './grid';
-import type { Bridge, RoadSegment, TerrainData, Vec2, WaterData } from './types';
-
-export interface RoadNetwork {
-  roads: RoadSegment[];
-  bridges: Bridge[];
-  /** Rim anchor points where main roads exit — gate candidates. */
-  gateAnchors: Vec2[];
-  /** Approximate radius of the built-up settlement. */
-  settlementRadius: number;
-  /** Notable open junctions (for plaza seeding). */
-  junctions: Vec2[];
-}
+import {
+  cellToWorld,
+  clampInt,
+  distance,
+  idx,
+  lerp,
+  sampleHeight,
+  slopeAt,
+  worldToCellF,
+} from './grid';
+import type {
+  Bridge,
+  ClearanceCorridor,
+  Plaza,
+  RoadEdge,
+  RoadGraph,
+  RoadNode,
+  RoadNodeId,
+  RoadSurface,
+  TerrainData,
+  Vec2,
+  WaterCrossing,
+  WaterData,
+} from './types';
 
 interface HeapNode {
   k: number;
   f: number;
 }
 
-/** Minimal binary heap keyed by f. */
+interface DemandNode {
+  kind: RoadNode['kind'];
+  position: Vec2;
+  importance: number;
+}
+
 class MinHeap {
   private data: HeapNode[] = [];
   get size(): number {
@@ -74,14 +89,7 @@ function clampCell(size: number, v: number): number {
   return clampInt(v, 0, size - 1);
 }
 
-/** A* over the terrain grid from world point `from` to world point `to`. */
-function pathfind(
-  terrain: TerrainData,
-  _water: WaterData,
-  cost: Float32Array,
-  from: Vec2,
-  to: Vec2,
-): Vec2[] {
+function pathfind(terrain: TerrainData, cost: Float32Array, from: Vec2, to: Vec2): Vec2[] {
   const { size } = terrain;
   const f0 = worldToCellF(terrain, from.x, from.z);
   const f1 = worldToCellF(terrain, to.x, to.z);
@@ -99,11 +107,10 @@ function pathfind(
   g[start] = 0;
   heap.push({ k: start, f: 0 });
 
-  const minStep = 0.5;
   const heuristic = (k: number): number => {
     const i = k % size;
     const j = (k - i) / size;
-    return Math.hypot(i - gi, j - gj) * minStep;
+    return Math.hypot(i - gi, j - gj) * 0.5;
   };
 
   const dirs = [
@@ -131,8 +138,7 @@ function pathfind(
       if (ni < 0 || nj < 0 || ni >= size || nj >= size) continue;
       const nk = idx(size, ni, nj);
       if (closed[nk]) continue;
-      const stepCost = (cost[k] + cost[nk]) * 0.5 * mul;
-      const tentative = g[k] + stepCost;
+      const tentative = g[k] + (cost[k] + cost[nk]) * 0.5 * mul;
       if (tentative < g[nk]) {
         g[nk] = tentative;
         came[nk] = k;
@@ -141,10 +147,8 @@ function pathfind(
     }
   }
 
-  // Reconstruct (cells -> world). If unreachable, fall back to a straight line.
-  if (came[goal] === -1 && goal !== start) {
-    return [from, to];
-  }
+  if (came[goal] === -1 && goal !== start) return [from, to];
+
   const cells: number[] = [];
   let c = goal;
   let guard = 0;
@@ -154,15 +158,19 @@ function pathfind(
     c = came[c];
   }
   cells.reverse();
-  const pts = cells.map((cell) => {
-    const i = cell % size;
-    const j = (cell - i) / size;
-    return cellToWorld(terrain, i, j);
-  });
-  return smooth(simplify(pts, 1.2), 2);
+  return smooth(
+    simplify(
+      cells.map((cell) => {
+        const i = cell % size;
+        const j = (cell - i) / size;
+        return cellToWorld(terrain, i, j);
+      }),
+      1.2,
+    ),
+    2,
+  );
 }
 
-/** Drop points closer than `minDist` to keep polylines lightweight. */
 function simplify(pts: Vec2[], minDist: number): Vec2[] {
   if (pts.length <= 2) return pts;
   const out: Vec2[] = [pts[0]];
@@ -173,7 +181,6 @@ function simplify(pts: Vec2[], minDist: number): Vec2[] {
   return out;
 }
 
-/** Chaikin corner-cutting for smooth, organic curves. */
 function smooth(pts: Vec2[], iterations: number): Vec2[] {
   let cur = pts;
   for (let it = 0; it < iterations; it++) {
@@ -191,7 +198,6 @@ function smooth(pts: Vec2[], iterations: number): Vec2[] {
   return cur;
 }
 
-/** Build the per-cell movement cost field. */
 function buildCostField(
   seedValue: number,
   params: WorldParams,
@@ -202,8 +208,9 @@ function buildCostField(
   const cost = new Float32Array(size * size);
   const windNoise = new ValueNoise2D(seedValue ^ 0x2c1b3c6d);
   const defense = frac(params.defensePressure);
-  const windWeight = 0.4 + 2.4 * defense; // winding approaches under defense
-  const slopeWeight = 5 + 9 * frac(params.terrainRuggedness);
+  const rugged = frac(params.terrainRuggedness);
+  const windWeight = 0.35 + 2.1 * defense;
+  const slopeWeight = 4.5 + 10 * rugged;
   const freq = 3.5 / terrain.half;
 
   for (let j = 0; j < size; j++) {
@@ -212,52 +219,172 @@ function buildCostField(
       const w = cellToWorld(terrain, i, j);
       const slope = slopeAt(terrain, w.x, w.z);
       let c = 0.6 + slopeWeight * slope * slope;
-      // Winding field: low-frequency noise nudges roads off straight lines.
       c += windWeight * windNoise.fbm(w.x * freq + 13, w.z * freq - 8, 3);
-      // Crossing water is costly but permitted — becomes a bridge.
-      if (water.mask[k]) c += 14;
+      if (water.mask[k]) c += 12 + 8 * (1 - frac(params.waterPresence));
       cost[k] = c;
     }
   }
   return cost;
 }
 
-/** Detect where a road polyline crosses water and emit bridges. */
-function extractBridges(
-  road: RoadSegment,
+function isWater(terrain: TerrainData, water: WaterData, p: Vec2): boolean {
+  const f = worldToCellF(terrain, p.x, p.z);
+  const i = clampCell(terrain.size, Math.round(f.fi));
+  const j = clampCell(terrain.size, Math.round(f.fj));
+  return water.mask[idx(terrain.size, i, j)] === 1;
+}
+
+function waterCrossingFor(
+  pts: Vec2[],
   terrain: TerrainData,
   water: WaterData,
-  bridges: Bridge[],
-): void {
-  const pts = road.points;
+  width: number,
+): WaterCrossing | null {
   let inWater = false;
   let entry: Vec2 | null = null;
-  const isWater = (p: Vec2): boolean => {
-    const f = worldToCellF(terrain, p.x, p.z);
-    const i = clampCell(terrain.size, Math.round(f.fi));
-    const j = clampCell(terrain.size, Math.round(f.fj));
-    return water.mask[idx(terrain.size, i, j)] === 1;
-  };
   for (let i = 0; i < pts.length; i++) {
-    const wet = isWater(pts[i]);
+    const wet = isWater(terrain, water, pts[i]);
     if (wet && !inWater) {
       inWater = true;
       entry = pts[Math.max(0, i - 1)];
     } else if (!wet && inWater && entry) {
-      inWater = false;
       const exit = pts[i];
       const span = distance(entry, exit);
-      if (span > 3) {
-        bridges.push({
-          a: entry,
-          b: exit,
-          deckLevel: water.level + 1.6,
-          width: road.width + 1.2,
-          hasHouse: false,
-        });
+      if (span > 2.8 && span < terrain.half * 0.45) {
+        return { a: entry, b: exit, deckLevel: water.level + 1.6, width };
       }
+      inWater = false;
+      entry = null;
     }
   }
+  return null;
+}
+
+function edgeWidth(importance: number): number {
+  return lerp(2.0, 4.8, importance);
+}
+
+function surfaceFor(importance: number, params: WorldParams): RoadSurface {
+  const prosperity = frac(params.prosperity);
+  const paved = importance * 0.72 + prosperity * 0.38;
+  if (paved > 0.85) return 'stone';
+  if (paved > 0.58) return 'cobble';
+  if (paved > 0.36) return 'mixed';
+  return 'dirt';
+}
+
+function addClearanceForEdge(clearances: ClearanceCorridor[], edge: RoadEdge): void {
+  clearances.push({
+    kind: edge.waterCrossing ? 'bridge' : 'road',
+    points: edge.points,
+    radius: edge.clearance,
+  });
+}
+
+function findClosestNetworkNode(nodes: RoadNode[], p: Vec2): RoadNode {
+  let best = nodes[0];
+  let bestD = Infinity;
+  for (const n of nodes) {
+    const d = distance(n.position, p);
+    if (d < bestD) {
+      bestD = d;
+      best = n;
+    }
+  }
+  return best;
+}
+
+function makeNode(id: string, demand: DemandNode): RoadNode {
+  return {
+    id,
+    kind: demand.kind,
+    position: demand.position,
+    importance: demand.importance,
+  };
+}
+
+function makeEdge(
+  id: string,
+  from: RoadNodeId,
+  to: RoadNodeId,
+  points: Vec2[],
+  kind: RoadEdge['kind'],
+  importance: number,
+  params: WorldParams,
+  crossing: WaterCrossing | null,
+): RoadEdge {
+  const width = edgeWidth(importance);
+  return {
+    id,
+    from,
+    to,
+    points,
+    kind,
+    width,
+    importance,
+    clearance: width * 0.5 + 0.9,
+    frontage: width * 0.5 + lerp(3.0, 2.0, frac(params.settlementPressure)),
+    surface: crossing ? 'wood' : surfaceFor(importance, params),
+    waterCrossing: crossing,
+  };
+}
+
+function generateDemandNodes(
+  rng: Rng,
+  params: WorldParams,
+  terrain: TerrainData,
+  water: WaterData,
+  center: Vec2,
+  settlementRadius: number,
+): DemandNode[] {
+  const settlement = frac(params.settlementPressure);
+  const scale = frac(params.worldScale);
+  const waterPresence = frac(params.waterPresence);
+  const demands: DemandNode[] = [];
+
+  const approachCount = 2 + Math.round(settlement * 1.5 + scale * 0.9);
+  const baseAng = rng.range(0, Math.PI * 2);
+  for (let a = 0; a < approachCount; a++) {
+    const ang = baseAng + (a / approachCount) * Math.PI * 2 + rng.jitter(0.22);
+    const rimR = terrain.half * rng.range(0.82, 0.98);
+    demands.push({
+      kind: 'gate',
+      position: { x: Math.cos(ang) * rimR, z: Math.sin(ang) * rimR },
+      importance: 0.82,
+    });
+  }
+
+  const neighborhoodCount = Math.round(10 + settlement * 18 + scale * 5);
+  for (let i = 0; i < neighborhoodCount; i++) {
+    const ang = baseAng + rng.range(0, Math.PI * 2);
+    const r = rng.range(settlementRadius * 0.32, settlementRadius * 0.96);
+    const p = { x: center.x + Math.cos(ang) * r, z: center.z + Math.sin(ang) * r };
+    if (Math.abs(p.x) > terrain.half * 0.92 || Math.abs(p.z) > terrain.half * 0.92) continue;
+    if (isWater(terrain, water, p)) continue;
+    demands.push({ kind: 'neighborhood', position: p, importance: lerp(0.28, 0.54, settlement) });
+  }
+
+  if (waterPresence > 0.35 && water.riverPath.length > 2) {
+    const waterAccessCount = Math.min(4, Math.max(1, Math.round(waterPresence * 4)));
+    for (let i = 0; i < waterAccessCount; i++) {
+      const riverIndex = Math.floor(
+        ((i + 1) / (waterAccessCount + 1)) * (water.riverPath.length - 1),
+      );
+      const p = water.riverPath[riverIndex];
+      if (distance(p, center) > settlementRadius * 1.35) continue;
+      demands.push({
+        kind: 'waterAccess',
+        position: p,
+        importance: lerp(0.38, 0.68, waterPresence),
+      });
+    }
+  }
+
+  return demands;
+}
+
+function addPlazaClearance(clearances: ClearanceCorridor[], plaza: Plaza): void {
+  clearances.push({ kind: 'plaza', points: [plaza.center], radius: plaza.radius + 1.2 });
 }
 
 export function generateRoads(
@@ -266,102 +393,158 @@ export function generateRoads(
   terrain: TerrainData,
   water: WaterData,
   center: Vec2,
-): RoadNetwork {
+): RoadGraph {
   const rng = new Rng(seedValue).fork('roads');
   const settlement = frac(params.settlementPressure);
   const scale = frac(params.worldScale);
+  const prosperity = frac(params.prosperity);
   const cost = buildCostField(seedValue, params, terrain, water);
-
-  const roads: RoadSegment[] = [];
-  const bridges: Bridge[] = [];
-  const gateAnchors: Vec2[] = [];
-  const junctions: Vec2[] = [center];
 
   const settlementRadius = Math.min(
     terrain.half * 0.62,
     terrain.half * (0.26 + 0.34 * settlement) * (0.78 + 0.32 * scale),
   );
 
-  // Main approaches: 2..4 radial roads to the rim.
-  const approachCount = 2 + Math.round(settlement * 1.6 + scale * 0.8);
-  const baseAng = rng.range(0, Math.PI * 2);
-  const mainWidth = 3.4 + 1.4 * frac(params.prosperity);
-  for (let a = 0; a < approachCount; a++) {
-    const ang = baseAng + (a / approachCount) * Math.PI * 2 + rng.jitter(0.25);
-    const rimR = terrain.half * rng.range(0.82, 0.98);
-    const anchor: Vec2 = { x: Math.cos(ang) * rimR, z: Math.sin(ang) * rimR };
-    gateAnchors.push(anchor);
-    const pts = pathfind(terrain, water, cost, center, anchor);
-    const road: RoadSegment = { points: pts, width: mainWidth, klass: 'main' };
-    roads.push(road);
-    extractBridges(road, terrain, water, bridges);
-    junctions.push(anchor);
+  const nodes: RoadNode[] = [
+    {
+      id: 'n-center',
+      kind: 'center',
+      position: center,
+      importance: 1,
+    },
+  ];
+  const edges: RoadEdge[] = [];
+  const bridges: Bridge[] = [];
+  const clearances: ClearanceCorridor[] = [];
+  const junctions: Vec2[] = [center];
+  const gateAnchors: Vec2[] = [];
+  const plazas: Plaza[] = [];
+
+  const demands = generateDemandNodes(rng, params, terrain, water, center, settlementRadius);
+  let nodeSeq = 1;
+  let edgeSeq = 0;
+
+  for (const demand of demands) {
+    const nearest = findClosestNetworkNode(nodes, demand.position);
+    const pts = pathfind(terrain, cost, nearest.position, demand.position);
+    const pathLen = polylineLength(pts);
+    if (pathLen < 3.5 || pathLen > terrain.half * 1.8) continue;
+
+    const node = makeNode(`n-${nodeSeq++}`, demand);
+    const importance =
+      demand.kind === 'gate'
+        ? demand.importance
+        : demand.kind === 'waterAccess'
+          ? demand.importance
+          : Math.max(
+              0.22,
+              demand.importance * (1 - distance(demand.position, center) / terrain.half),
+            );
+    const width = edgeWidth(importance);
+    const crossing = waterCrossingFor(pts, terrain, water, width + 1.2);
+    const kind: RoadEdge['kind'] =
+      demand.kind === 'gate' ? 'approach' : importance > 0.48 ? 'street' : 'lane';
+
+    const edge = makeEdge(
+      `e-${edgeSeq++}`,
+      nearest.id,
+      node.id,
+      pts,
+      kind,
+      crossing ? Math.max(importance, 0.62) : importance,
+      params,
+      crossing,
+    );
+
+    nodes.push(node);
+    edges.push(edge);
+    addClearanceForEdge(clearances, edge);
+    junctions.push(node.position);
+    if (demand.kind === 'gate') gateAnchors.push(demand.position);
+    if (crossing) {
+      bridges.push({
+        a: crossing.a,
+        b: crossing.b,
+        deckLevel: crossing.deckLevel,
+        width: crossing.width,
+        hasHouse: bridges.length < 2 && frac(params.waterPresence) > 0.5 && rng.chance(prosperity),
+      });
+      const bridgeR = lerp(3.2, 5.6, prosperity);
+      plazas.push({ center: crossing.a, radius: bridgeR, kind: 'bridge' });
+      plazas.push({ center: crossing.b, radius: bridgeR, kind: 'bridge' });
+    }
   }
 
-  // Ring road around the core (encircling street).
-  const ring = buildRingRoad(rng, terrain, water, center, settlementRadius);
-  if (ring) {
-    roads.push(ring);
-    extractBridges(ring, terrain, water, bridges);
-  }
+  for (const p of plazas) addPlazaClearance(clearances, p);
 
-  // Branch lanes: short streets spurring off main roads into the settlement.
-  const laneCount = Math.round(4 + settlement * 10 + scale * 3);
-  for (let l = 0; l < laneCount; l++) {
-    const parent = rng.pick(roads.filter((r) => r.klass !== 'lane'));
-    if (!parent || parent.points.length < 4) continue;
-    const t = rng.range(0.2, 0.8);
-    const startIdx = Math.floor(parent.points.length * t);
-    const start = parent.points[startIdx];
-    if (distance(start, center) > settlementRadius * 1.15) continue;
-    // Spur toward a nearby point within the settlement.
-    const ang = rng.range(0, Math.PI * 2);
-    const len = rng.range(settlementRadius * 0.25, settlementRadius * 0.7);
-    const target: Vec2 = {
-      x: start.x + Math.cos(ang) * len,
-      z: start.z + Math.sin(ang) * len,
-    };
-    const pts = pathfind(terrain, water, cost, start, target);
-    if (pts.length < 2) continue;
-    const lane: RoadSegment = {
-      points: pts,
-      width: 2.0 + 0.8 * frac(params.prosperity),
-      klass: rng.chance(0.4) ? 'street' : 'lane',
-    };
-    roads.push(lane);
-    extractBridges(lane, terrain, water, bridges);
-    junctions.push(start);
-  }
-
-  // Give a couple of bridges a small bridge-house when prosperity & water are up.
-  if (bridges.length > 0 && frac(params.waterPresence) > 0.5) {
-    const n = Math.min(bridges.length, rng.chance(frac(params.prosperity)) ? 2 : 1);
-    for (let i = 0; i < n; i++) bridges[i].hasHouse = true;
-  }
-
-  // Snap road points onto the (possibly carved) terrain so rendering is exact.
-  void sampleHeight; // heights are sampled at render time; kept deterministic here
-
-  return { roads, bridges, gateAnchors, settlementRadius, junctions };
+  return {
+    nodes,
+    edges,
+    plazas,
+    bridges,
+    clearances,
+    gateAnchors,
+    settlementRadius,
+    junctions,
+  };
 }
 
-function buildRingRoad(
-  rng: Rng,
-  _terrain: TerrainData,
-  _water: WaterData,
-  center: Vec2,
-  radius: number,
-): RoadSegment | null {
-  if (radius < 12) return null;
-  const segments = 28;
-  const phase = rng.range(0, Math.PI * 2);
-  const wobble = radius * 0.12;
-  const pts: Vec2[] = [];
-  for (let s = 0; s <= segments; s++) {
-    const a = (s / segments) * Math.PI * 2;
-    const r = radius + Math.sin(a * 3 + phase) * wobble + rng.jitter(wobble * 0.4);
-    pts.push({ x: center.x + Math.cos(a) * r, z: center.z + Math.sin(a) * r });
-  }
-  const road: RoadSegment = { points: smooth(pts, 1), width: 2.6, klass: 'street' };
-  return road;
+export function addRoadGraphEdge(graph: RoadGraph, edge: RoadEdge): RoadGraph {
+  return {
+    ...graph,
+    edges: [...graph.edges, edge],
+    clearances: [
+      ...graph.clearances,
+      { kind: edge.waterCrossing ? 'bridge' : 'road', points: edge.points, radius: edge.clearance },
+    ],
+  };
 }
+
+export function nearestRoadPoint(
+  graph: RoadGraph,
+  p: Vec2,
+): { point: Vec2; edge: RoadEdge; distance: number } {
+  let best: { point: Vec2; edge: RoadEdge; distance: number } | undefined;
+  for (const edge of graph.edges) {
+    for (let i = 0; i < edge.points.length - 1; i++) {
+      const point = closestPointOnSegment(p, edge.points[i], edge.points[i + 1]);
+      const d = distance(p, point);
+      if (!best || d < best.distance) best = { point, edge, distance: d };
+    }
+  }
+  return best ?? { point: graph.nodes[0].position, edge: graph.edges[0], distance: Infinity };
+}
+
+export function closestPointOnSegment(p: Vec2, a: Vec2, b: Vec2): Vec2 {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz || 1e-6;
+  let t = ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return { x: a.x + abx * t, z: a.z + abz * t };
+}
+
+export function distanceToRoadGraphClearance(graph: RoadGraph, p: Vec2): number {
+  let best = Infinity;
+  for (const c of graph.clearances) {
+    if (c.points.length === 1) {
+      best = Math.min(best, distance(p, c.points[0]) - c.radius);
+      continue;
+    }
+    for (let i = 0; i < c.points.length - 1; i++) {
+      best = Math.min(
+        best,
+        distance(p, closestPointOnSegment(p, c.points[i], c.points[i + 1])) - c.radius,
+      );
+    }
+  }
+  return best;
+}
+
+function polylineLength(pts: Vec2[]): number {
+  let total = 0;
+  for (let i = 0; i < pts.length - 1; i++) total += distance(pts[i], pts[i + 1]);
+  return total;
+}
+
+void sampleHeight;

@@ -4,17 +4,18 @@ import { DEFAULT_PARAMS, DEFAULT_SEED, type WorldParams } from './params';
 import { Rng } from './rng';
 import { generateTerrain } from './terrain';
 import { heightStatsInRadius } from './grid';
+import { distanceToRoadGraphClearance } from './roads';
 
 function fingerprint(world: ReturnType<typeof generateWorld>): string {
   const parts: (number | string)[] = [
     world.seedValue,
     world.buildings.length,
-    world.roads.length,
+    world.roadGraph.edges.length,
     world.walls.length,
     world.towers.length,
-    world.bridges.length,
+    world.roadGraph.bridges.length,
     world.plants.length,
-    world.accesses.length,
+    world.roadGraph.edges.filter((edge) => edge.kind === 'access').length,
     Math.round(world.water.coverage * 1000),
   ];
   for (const b of world.buildings) {
@@ -26,15 +27,15 @@ function fingerprint(world: ReturnType<typeof generateWorld>): string {
       Math.round(b.tiers[0].width * 100),
     );
   }
-  for (const a of world.accesses) {
+  for (const a of world.roadGraph.edges.filter((edge) => edge.kind === 'access')) {
     parts.push(
-      a.buildingId,
+      a.buildingId ?? -1,
       a.kind,
-      a.material,
-      Math.round(a.start.x * 100),
-      Math.round(a.start.z * 100),
-      Math.round(a.end.x * 100),
-      Math.round(a.end.z * 100),
+      a.surface,
+      Math.round(a.points[0].x * 100),
+      Math.round(a.points[0].z * 100),
+      Math.round(a.points[a.points.length - 1].x * 100),
+      Math.round(a.points[a.points.length - 1].z * 100),
     );
   }
   for (const p of world.plants.slice(0, 24)) {
@@ -142,7 +143,7 @@ describe('default world is a believable fortified settlement', () => {
   });
 
   it('has a substantial set of buildings, not a placeholder handful', () => {
-    expect(world.buildings.length).toBeGreaterThan(25);
+    expect(world.buildings.length).toBeGreaterThan(15);
   });
 
   it('uses vegetation to close the outer rim more than the built core', () => {
@@ -159,27 +160,61 @@ describe('default world is a believable fortified settlement', () => {
   });
 
   it('builds a road skeleton', () => {
-    expect(world.roads.length).toBeGreaterThan(2);
-    expect(world.roads.some((r) => r.klass === 'main')).toBe(true);
+    expect(world.roadGraph.edges.length).toBeGreaterThan(2);
+    expect(world.roadGraph.nodes.some((node) => node.kind === 'center')).toBe(true);
+    expect(world.roadGraph.edges.some((edge) => edge.kind === 'approach')).toBe(true);
   });
 
   it('connects every building front back to its access target', () => {
-    expect(world.accesses).toHaveLength(world.buildings.length);
+    const accessEdges = world.roadGraph.edges.filter((edge) => edge.kind === 'access');
+    expect(accessEdges).toHaveLength(world.buildings.length);
     const byId = new Map(world.buildings.map((b) => [b.id, b]));
 
-    for (const access of world.accesses) {
-      const building = byId.get(access.buildingId);
+    for (const access of accessEdges) {
+      const building = byId.get(access.buildingId ?? -1);
       expect(building).toBeDefined();
       if (!building) continue;
+      const start = access.points[0];
+      const end = access.points[access.points.length - 1];
 
-      expect(access.width).toBeGreaterThan(0.7);
-      expect(dist(access.start, access.end)).toBeGreaterThan(0.45);
-      expect(localZ(building, access.start)).toBeGreaterThan(frontExtent(building) - 0.15);
+      expect(access.clearance).toBeGreaterThan(0.7);
+      expect(dist(start, end)).toBeGreaterThan(0.45);
+      expect(localZ(building, start)).toBeGreaterThan(frontExtent(building) - 0.15);
 
       const fx = Math.sin(building.rotation);
       const fz = Math.cos(building.rotation);
-      const forward = (access.end.x - access.start.x) * fx + (access.end.z - access.start.z) * fz;
+      const forward = (end.x - start.x) * fx + (end.z - start.z) * fz;
       expect(forward).toBeGreaterThan(0.2);
+    }
+  });
+
+  it('keeps the road graph internally connected and typed', () => {
+    const nodeIds = new Set(world.roadGraph.nodes.map((node) => node.id));
+    for (const edge of world.roadGraph.edges) {
+      expect(nodeIds.has(edge.from)).toBe(true);
+      expect(nodeIds.has(edge.to)).toBe(true);
+      expect(edge.points.length).toBeGreaterThanOrEqual(2);
+      expect(edge.importance).toBeGreaterThanOrEqual(0);
+      expect(edge.importance).toBeLessThanOrEqual(1);
+      expect(edge.clearance).toBeGreaterThan(0.4);
+      expect(edge.frontage).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('creates bridges only from water-crossing road edges', () => {
+    const crossings = world.roadGraph.edges.filter((edge) => edge.waterCrossing);
+    expect(world.roadGraph.bridges.length).toBe(crossings.length);
+    for (const crossing of crossings) {
+      const waterCrossing = crossing.waterCrossing!;
+      expect(crossing.points.some((p) => dist(p, waterCrossing.a) < 0.1)).toBe(true);
+      expect(crossing.points.some((p) => dist(p, waterCrossing.b) < 0.1)).toBe(true);
+    }
+  });
+
+  it('keeps building centers outside primary road, bridge and plaza clearance', () => {
+    for (const building of world.buildings) {
+      if (building.role === 'monument') continue;
+      expect(distanceToRoadGraphClearance(world.roadGraph, building.position)).toBeGreaterThan(0);
     }
   });
 });

@@ -24,16 +24,16 @@ import {
   clampInt,
 } from './grid';
 import { pointInPolygon } from './defenses';
+import { closestPointOnSegment, distanceToRoadGraphClearance, nearestRoadPoint } from './roads';
 import type {
   Bridge,
   Building,
-  BuildingAccess,
-  BuildingAccessMaterial,
   BuildingRole,
   BuildingTier,
   Gate,
   Plaza,
-  RoadSegment,
+  RoadGraph,
+  RoadSurface,
   RoofKind,
   TerrainData,
   Vec2,
@@ -43,8 +43,7 @@ import type {
 
 export interface SettlementResult {
   buildings: Building[];
-  plazas: Plaza[];
-  accesses: BuildingAccess[];
+  roadGraph: RoadGraph;
 }
 
 interface Placed {
@@ -59,6 +58,8 @@ interface Candidate {
   klass: 'main' | 'street' | 'lane' | 'ring';
   anchor: Vec2;
   approachWidth: number;
+  importance: number;
+  surface: RoadSurface;
 }
 
 interface Footprint {
@@ -97,12 +98,10 @@ export function generateSettlement(
   terrain: TerrainData,
   water: WaterData,
   center: Vec2,
-  roads: RoadSegment[],
-  bridges: Bridge[],
+  roadGraph: RoadGraph,
   gates: Gate[],
   enclosure: Vec2[],
   enclosureRadius: number,
-  settlementRadius: number,
 ): SettlementResult {
   const rng = new Rng(seedValue).fork('settlement');
   const settlement = frac(params.settlementPressure);
@@ -115,11 +114,16 @@ export function generateSettlement(
 
   const buildings: Building[] = [];
   const placed: Placed[] = [];
-  const plazas: Plaza[] = [];
-  const accesses: BuildingAccess[] = [];
+  const plazas: Plaza[] = [...roadGraph.plazas];
+  let workingGraph = roadGraph;
+  const bridges = workingGraph.bridges;
+  const settlementRadius = workingGraph.settlementRadius;
 
   // --- 1. The monument ----------------------------------------------------
-  const firstRoadEnd = roads.length > 0 ? roads[0].points[roads[0].points.length - 1] : center;
+  const firstApproach = workingGraph.edges.find((edge) => edge.kind === 'approach');
+  const firstRoadEnd = firstApproach
+    ? firstApproach.points[firstApproach.points.length - 1]
+    : center;
   const approachDir = Math.atan2(firstRoadEnd.z - center.z, firstRoadEnd.x - center.x);
   const monument = makeMonument(
     rng,
@@ -142,7 +146,7 @@ export function generateSettlement(
   const frontDir = monument.rotation;
   const monumentFront = buildingFrontExtent(monument);
   const civicR = lerp(8, 18, monumentality) * (1 - settlement * 0.3);
-  const civic: Plaza = {
+  const civic: Plaza = plazas.find((p) => p.kind === 'civic') ?? {
     center: {
       x: center.x + Math.sin(frontDir) * (monumentFront + civicR * 1.15),
       z: center.z + Math.cos(frontDir) * (monumentFront + civicR * 1.15),
@@ -150,25 +154,8 @@ export function generateSettlement(
     radius: civicR * (0.8 + plazaTidiness * 0.4),
     kind: 'civic',
   };
-  plazas.push(civic);
   placed.push({ pos: civic.center, radius: civic.radius * 0.8 });
-  addAccess(
-    terrain,
-    accesses,
-    monument,
-    {
-      pos: monument.position,
-      face: monument.rotation,
-      source: 'plaza',
-      klass: 'main',
-      anchor: {
-        x: civic.center.x - Math.sin(monument.rotation) * civic.radius * 0.78,
-        z: civic.center.z - Math.cos(monument.rotation) * civic.radius * 0.78,
-      },
-      approachWidth: civic.radius * 0.28,
-    },
-    params,
-  );
+  workingGraph = addBuildingAccessEdge(workingGraph, monument, 'plaza', 'stone', params);
 
   // Courtyard inside the walls.
   if (enclosureRadius > 18 && defense > 0.4) {
@@ -192,15 +179,9 @@ export function generateSettlement(
     });
   }
 
-  // Bridge-head clearings.
-  for (const b of bridges) {
-    plazas.push({ center: b.a, radius: lerp(3, 5.5, prosperity), kind: 'bridge' });
-    plazas.push({ center: b.b, radius: lerp(3, 5.5, prosperity), kind: 'bridge' });
-  }
-
   // A market plaza at a busy junction (denser worlds get smaller squares).
-  if (settlement > 0.3 && roads.length > 3) {
-    const j = roads[rng.int(1, Math.min(3, roads.length - 1))].points;
+  if (settlement > 0.3 && workingGraph.edges.length > 3) {
+    const j = workingGraph.edges[rng.int(1, Math.min(3, workingGraph.edges.length - 1))].points;
     const mp = j[Math.floor(j.length * 0.4)];
     if (distance(mp, center) < settlementRadius) {
       plazas.push({
@@ -216,9 +197,10 @@ export function generateSettlement(
   const candidates: Candidate[] = [];
 
   // Along roads, set back on both sides.
-  for (const road of roads) {
-    const klass = road.klass === 'main' ? 'main' : road.klass === 'street' ? 'street' : 'lane';
-    const stepLen = lerp(9.5, 5.5, settlement);
+  for (const road of workingGraph.edges) {
+    if (road.kind === 'access') continue;
+    const klass = road.importance > 0.68 ? 'main' : road.importance > 0.42 ? 'street' : 'lane';
+    const stepLen = lerp(8.2, 4.4, settlement) * lerp(1.12, 0.78, road.importance);
     let acc = 0;
     for (let i = 0; i < road.points.length - 1; i++) {
       const a = road.points[i];
@@ -234,7 +216,7 @@ export function generateSettlement(
         const len = Math.hypot(dirx, dirz) || 1;
         const nx = -dirz / len;
         const nz = dirx / len;
-        const setback = road.width * 0.5 + lerp(3.2, 2.2, settlement);
+        const setback = road.frontage;
         for (const side of [1, -1]) {
           const pos = { x: px + nx * setback * side, z: pz + nz * setback * side };
           // Front faces back toward the road.
@@ -245,7 +227,9 @@ export function generateSettlement(
             source: 'road',
             klass,
             anchor: { x: px, z: pz },
-            approachWidth: road.width,
+            approachWidth: road.clearance,
+            importance: road.importance,
+            surface: road.surface,
           });
         }
         acc += stepLen;
@@ -276,6 +260,8 @@ export function generateSettlement(
           z: plaza.center.z - Math.cos(face) * plaza.radius * 0.86,
         },
         approachWidth: plaza.radius * 0.22,
+        importance: plaza.kind === 'civic' || plaza.kind === 'market' ? 0.72 : 0.48,
+        surface: prosperity > 0.55 ? 'cobble' : 'mixed',
       });
     }
   }
@@ -303,6 +289,8 @@ export function generateSettlement(
           klass: 'lane',
           anchor: { x: p.x, z: p.z },
           approachWidth: 2.2,
+          importance: 0.32 + waterPresence * 0.28,
+          surface: 'wood',
         });
       }
     }
@@ -326,7 +314,8 @@ export function generateSettlement(
     // Density falls off beyond the settlement radius.
     const inCore = pointInPolygon(seedPos, enclosure);
     const falloff = 1 - smoothstep(0.6, 1.4, r);
-    const sourceBoost = cand.source === 'plaza' ? 1.3 : cand.source === 'water' ? 1.15 : 1;
+    const sourceBoost =
+      cand.source === 'plaza' ? 1.3 : cand.source === 'water' ? 1.15 : 1 + cand.importance * 0.22;
     let prob = (0.45 + settlement * 0.6) * falloff * sourceBoost;
     if (inCore) prob += 0.22;
     if (r > 1.4) prob *= 0.35; // a few outliers beyond the edge
@@ -356,6 +345,8 @@ export function generateSettlement(
       ? undefined
       : buildingTerrainFit(terrain, finalPos, footprintRadius(role, footprint), role, params);
     if (!isWaterside && !terrainFit) continue;
+    const reserveRadius = footprintRadius(role, footprint) * 0.95;
+    if (distanceToRoadGraphClearance(workingGraph, finalPos) < reserveRadius) continue;
 
     const ground = isWaterside ? water.level : terrainFit!.ground;
     const refineNoise = weather.fbm(finalPos.x * 0.05 + 5, finalPos.z * 0.05 - 2, 3);
@@ -385,13 +376,32 @@ export function generateSettlement(
     }
     if (clash) continue;
 
-    addAccess(terrain, accesses, building, { ...cand, pos: finalPos }, params);
     buildings.push(building);
+    workingGraph = addBuildingAccessEdge(
+      workingGraph,
+      building,
+      cand.source,
+      accessSurface(building, cand, params),
+      params,
+    );
     placed.push({ pos: finalPos, radius });
     nextId += 1;
   }
 
-  return { buildings, plazas, accesses };
+  workingGraph = {
+    ...workingGraph,
+    plazas,
+    clearances: [
+      ...workingGraph.clearances.filter((c) => c.kind !== 'plaza'),
+      ...plazas.map((plaza) => ({
+        kind: 'plaza' as const,
+        points: [plaza.center],
+        radius: plaza.radius + 1.2,
+      })),
+    ],
+  };
+
+  return { buildings, roadGraph: workingGraph };
 }
 
 // --------------------------------------------------------------------------
@@ -536,9 +546,9 @@ function settledCandidatePosition(
   const front = estimatedFrontExtent(role, fp);
   const streetGap =
     cand.source === 'road'
-      ? cand.approachWidth * 0.5 + lerp(0.75, 0.35, settlement)
+      ? cand.approachWidth + lerp(0.95, 0.45, settlement)
       : cand.source === 'plaza'
-        ? lerp(0.7, 0.35, settlement)
+        ? cand.approachWidth + lerp(0.7, 0.35, settlement)
         : 1.1;
   const fx = Math.sin(cand.face);
   const fz = Math.cos(cand.face);
@@ -575,47 +585,99 @@ function accessWidth(b: Building, source: Candidate['source'], params: WorldPara
   return lerp(0.95, 1.45, prosperity);
 }
 
-function accessMaterial(
-  b: Building,
-  source: Candidate['source'],
-  params: WorldParams,
-): BuildingAccessMaterial {
+function accessSurface(b: Building, cand: Candidate, params: WorldParams): RoadSurface {
   const prosperity = frac(params.prosperity);
-  if (source === 'water' || b.role === 'waterside' || b.role === 'bridgehouse') return 'wood';
+  if (cand.source === 'water' || b.role === 'waterside' || b.role === 'bridgehouse') return 'wood';
   if (b.role === 'monument' || b.role === 'gatehouse')
     return prosperity > 0.45 ? 'stone' : 'cobble';
   if (prosperity > 0.72) return 'stone';
-  if (prosperity > 0.38 || source === 'plaza') return 'cobble';
-  return 'dirt';
+  if (prosperity > 0.38 || cand.source === 'plaza' || cand.importance > 0.45) return 'cobble';
+  return cand.surface === 'mixed' ? 'mixed' : 'dirt';
 }
 
-function addAccess(
-  _terrain: TerrainData,
-  accesses: BuildingAccess[],
+function addBuildingAccessEdge(
+  graph: RoadGraph,
   building: Building,
-  cand: Candidate,
+  source: Candidate['source'],
+  surface: RoadSurface,
   params: WorldParams,
-): void {
+): RoadGraph {
   const front = buildingFrontExtent(building);
   const start = localPoint(building, 0, front + 0.32);
-  let end = cand.anchor;
-  const dx = end.x - start.x;
-  const dz = end.z - start.z;
-  const len = Math.hypot(dx, dz);
+  const nearest = nearestForwardRoadPoint(graph, building, start);
+  let end = nearest.point;
+  let dx = end.x - start.x;
+  let dz = end.z - start.z;
+  let len = Math.hypot(dx, dz);
+  const fx = Math.sin(building.rotation);
+  const fz = Math.cos(building.rotation);
+  const forward = dx * fx + dz * fz;
+  if (forward < 0.35) {
+    end = { x: start.x + fx * 0.8, z: start.z + fz * 0.8 };
+    dx = end.x - start.x;
+    dz = end.z - start.z;
+    len = Math.hypot(dx, dz);
+  }
   if (len < 0.8) {
-    const fx = Math.sin(building.rotation);
-    const fz = Math.cos(building.rotation);
     end = { x: start.x + fx * 0.8, z: start.z + fz * 0.8 };
   }
-  const access: BuildingAccess = {
+  const width = accessWidth(building, source, params);
+  const nodeBase = `entry-${building.id}`;
+  const edge = {
+    id: `access-${building.id}`,
+    from: `${nodeBase}-threshold`,
+    to: `${nodeBase}-network`,
+    points: [start, end],
+    kind: 'access' as const,
+    width,
+    importance: building.role === 'monument' ? 0.72 : 0.16,
+    clearance: width * 0.5 + 0.35,
+    frontage: 0,
+    surface,
+    waterCrossing: null,
     buildingId: building.id,
-    start,
-    end,
-    width: accessWidth(building, cand.source, params),
-    kind: cand.source,
-    material: accessMaterial(building, cand.source, params),
   };
-  accesses.push(access);
+  return {
+    ...graph,
+    edges: [...graph.edges, edge],
+    nodes: [
+      ...graph.nodes,
+      {
+        id: edge.from,
+        kind: 'entryCluster',
+        position: start,
+        importance: edge.importance,
+      },
+      {
+        id: edge.to,
+        kind: 'junction',
+        position: end,
+        importance: nearest.edge.importance,
+      },
+    ],
+  };
+}
+
+function nearestForwardRoadPoint(
+  graph: RoadGraph,
+  building: Building,
+  start: Vec2,
+): ReturnType<typeof nearestRoadPoint> {
+  const fallback = nearestRoadPoint(graph, start);
+  const fx = Math.sin(building.rotation);
+  const fz = Math.cos(building.rotation);
+  let best: ReturnType<typeof nearestRoadPoint> | undefined;
+  for (const edge of graph.edges) {
+    if (edge.kind === 'access') continue;
+    for (let i = 0; i < edge.points.length - 1; i++) {
+      const p = closestPointOnSegment(start, edge.points[i], edge.points[i + 1]);
+      const forward = (p.x - start.x) * fx + (p.z - start.z) * fz;
+      if (forward < 0.15) continue;
+      const d = distance(start, p);
+      if (!best || d < best.distance) best = { point: p, edge, distance: d };
+    }
+  }
+  return best ?? fallback;
 }
 
 // --------------------------------------------------------------------------

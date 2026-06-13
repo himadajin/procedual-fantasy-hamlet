@@ -882,6 +882,6 @@ export function buildStructures(world: World): {
   for (const w of world.walls) addWall(m, w);
   for (const t of world.towers) addTower(m, t);
   for (const g of world.gates) addGate(m, g);
-  for (const br of world.bridges) addBridge(m, br);
+  for (const br of world.roadGraph.bridges) addBridge(m, br);
   return { geometry: m.toGeometry(), triangles: m.triangleCount };
 }

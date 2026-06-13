@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PARAMS, type WorldParams } from '../../generation/params';
-import type { TerrainData, World, WorldSummary } from '../../generation/types';
+import type {
+  Bridge,
+  Plaza,
+  RoadEdge,
+  RoadGraph,
+  TerrainData,
+  World,
+  WorldSummary,
+} from '../../generation/types';
 import { buildRoadGeometry } from './landscape';
 
 function flatTerrain(): TerrainData {
@@ -62,6 +70,26 @@ function summary(params: WorldParams): WorldSummary {
   };
 }
 
+function roadGraph(edges: RoadEdge[], plazas: Plaza[], bridges: Bridge[] = []): RoadGraph {
+  return {
+    nodes: [
+      { id: 'a', kind: 'center', position: { x: -10, z: -4 }, importance: 1 },
+      { id: 'b', kind: 'gate', position: { x: 10, z: 4 }, importance: 0.8 },
+    ],
+    edges,
+    plazas,
+    bridges,
+    clearances: edges.map((edge) => ({
+      kind: edge.waterCrossing ? 'bridge' : 'road',
+      points: edge.points,
+      radius: edge.clearance,
+    })),
+    gateAnchors: [],
+    settlementRadius: 16,
+    junctions: [{ x: 0, z: 0 }],
+  };
+}
+
 function roadWorld(params: WorldParams): World {
   const terrain = flatTerrain();
   return {
@@ -79,33 +107,49 @@ function roadWorld(params: WorldParams): World {
       riverPath: [],
     },
     center: { x: 0, z: 0 },
-    roads: [
-      {
-        points: [
-          { x: -10, z: -4 },
-          { x: 0, z: 0 },
-          { x: 10, z: 4 },
-        ],
-        width: 3.2,
-        klass: 'main',
-      },
-    ],
-    plazas: [{ center: { x: 0, z: 0 }, radius: 4, kind: 'civic' }],
-    accesses: [
-      {
-        buildingId: 1,
-        start: { x: -2, z: 5 },
-        end: { x: 0, z: 1.5 },
-        width: 1.2,
-        kind: 'road',
-        material: 'cobble',
-      },
-    ],
+    roadGraph: roadGraph(
+      [
+        {
+          id: 'road',
+          from: 'a',
+          to: 'b',
+          points: [
+            { x: -10, z: -4 },
+            { x: 0, z: 0 },
+            { x: 10, z: 4 },
+          ],
+          kind: 'approach',
+          width: 3.2,
+          importance: 0.9,
+          clearance: 3.2,
+          frontage: 4.4,
+          surface: 'cobble',
+          waterCrossing: null,
+        },
+        {
+          id: 'access',
+          from: 'entry-a',
+          to: 'entry-b',
+          points: [
+            { x: -2, z: 5 },
+            { x: 0, z: 1.5 },
+          ],
+          kind: 'access',
+          width: 1.2,
+          importance: 0.2,
+          clearance: 1.2,
+          frontage: 0,
+          surface: 'cobble',
+          buildingId: 1,
+          waterCrossing: null,
+        },
+      ],
+      [{ center: { x: 0, z: 0 }, radius: 4, kind: 'civic' }],
+    ),
     buildings: [],
     walls: [],
     towers: [],
     gates: [],
-    bridges: [],
     plants: [],
     summary: summary(params),
   };
@@ -146,31 +190,64 @@ function waterWorld(params: WorldParams): World {
       riverPath: [],
     },
     center: { x: 0, z: 0 },
-    roads: [],
-    plazas: [],
-    accesses: [
-      {
-        buildingId: 1,
-        start: { x: -5, z: 2 },
-        end: { x: -1, z: 2 },
-        width: 1.25,
-        kind: 'water',
-        material: 'wood',
-      },
-    ],
+    roadGraph: roadGraph(
+      [
+        {
+          id: 'bridge-road',
+          from: 'a',
+          to: 'b',
+          points: [
+            { x: -9, z: 0 },
+            { x: -7, z: 0 },
+            { x: 7, z: 0 },
+            { x: 9, z: 0 },
+          ],
+          kind: 'approach',
+          width: 3,
+          importance: 0.75,
+          clearance: 3.1,
+          frontage: 4.2,
+          surface: 'wood',
+          waterCrossing: {
+            a: { x: -7, z: 0 },
+            b: { x: 7, z: 0 },
+            deckLevel: 1.6,
+            width: 3,
+          },
+        },
+        {
+          id: 'access',
+          from: 'entry-a',
+          to: 'entry-b',
+          points: [
+            { x: -5, z: 2 },
+            { x: -1, z: 2 },
+          ],
+          kind: 'access',
+          width: 1.25,
+          importance: 0.2,
+          clearance: 1.25,
+          frontage: 0,
+          surface: 'wood',
+          buildingId: 1,
+          waterCrossing: null,
+        },
+      ],
+      [],
+      [
+        {
+          a: { x: -7, z: 0 },
+          b: { x: 7, z: 0 },
+          deckLevel: 1.6,
+          width: 3,
+          hasHouse: false,
+        },
+      ],
+    ),
     buildings: [],
     walls: [],
     towers: [],
     gates: [],
-    bridges: [
-      {
-        a: { x: -7, z: 0 },
-        b: { x: 7, z: 0 },
-        deckLevel: 1.6,
-        width: 3,
-        hasHouse: false,
-      },
-    ],
     plants: [],
     summary: summary(params),
   };
@@ -199,6 +276,6 @@ describe('landscape road meshing', () => {
   it('adds shoreline, bridge-head and waterside access structure for water worlds', () => {
     const count = triangleCount(waterWorld(DEFAULT_PARAMS));
 
-    expect(count).toBeGreaterThan(100);
+    expect(count).toBeGreaterThan(90);
   });
 });

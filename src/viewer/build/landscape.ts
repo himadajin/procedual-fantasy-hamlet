@@ -7,9 +7,9 @@ import { BufferAttribute, BufferGeometry } from 'three';
 import { idx, sampleHeight } from '../../generation/grid';
 import type {
   Bridge,
-  BuildingAccess,
   Plaza,
-  RoadSegment,
+  RoadEdge,
+  RoadSurface,
   TerrainData,
   Vec2,
   World,
@@ -142,19 +142,15 @@ export function buildRoadGeometry(world: World): BufferGeometry | null {
   let any = false;
 
   if (buildShoreline(m, world, prosperity, waterPresence)) any = true;
-  for (const bridge of world.bridges) {
+  for (const bridge of world.roadGraph.bridges) {
     buildBridgeHead(m, t, bridge, prosperity);
     any = true;
   }
-  for (const road of world.roads) {
+  for (const road of world.roadGraph.edges) {
     if (buildRibbon(m, t, road, prosperity)) any = true;
   }
-  for (const plaza of world.plazas) {
+  for (const plaza of world.roadGraph.plazas) {
     buildPlaza(m, t, plaza, prosperity);
-    any = true;
-  }
-  for (const access of world.accesses) {
-    buildAccess(m, t, access, prosperity, world.water.level);
     any = true;
   }
   if (!any) return null;
@@ -331,27 +327,44 @@ function buildBridgeHead(m: Mesher, t: TerrainData, bridge: Bridge, prosperity: 
   }
 }
 
-function buildRibbon(m: Mesher, t: TerrainData, road: RoadSegment, prosperity: number): boolean {
+function buildRibbon(m: Mesher, t: TerrainData, road: RoadEdge, prosperity: number): boolean {
   const pts = road.points;
   if (pts.length < 2) return false;
-  const roadGrade = road.klass === 'main' ? 1 : road.klass === 'street' ? 0.68 : 0.35;
-  const centerColor = mix(PALETTE.roadDirt, PALETTE.roadCobble, prosperity * roadGrade);
+  const roadGrade = road.importance;
+  const centerColor = roadSurfaceColor(road.surface, prosperity, roadGrade);
   const vergeColor = mix(PALETTE.soil, PALETTE.stoneDark, prosperity * 0.45 * roadGrade);
-  const centerWidth = road.width * (road.klass === 'lane' ? 0.84 : 0.76);
-  const edgeWidth = Math.max(0.18, Math.min(0.48, (road.width - centerWidth) / 2));
+  const width = road.width;
+  const centerWidth =
+    width * (road.kind === 'access' ? 0.92 : road.importance < 0.35 ? 0.84 : 0.76);
+  const edgeWidth = Math.max(0.12, Math.min(0.48, (width - centerWidth) / 2));
   const centerLift = 0.32;
   const edgeLift = 0.36;
 
   buildSurfaceRibbon(m, t, pts, centerWidth, 0, centerLift, centerColor);
-  if (road.width > 1.5) {
+  if (width > 1.5 && road.kind !== 'access') {
     const edgeOffset = centerWidth / 2 + edgeWidth / 2;
     buildSurfaceRibbon(m, t, pts, edgeWidth, edgeOffset, edgeLift, vergeColor);
     buildSurfaceRibbon(m, t, pts, edgeWidth, -edgeOffset, edgeLift, vergeColor);
   }
-  if (prosperity > 0.35 && road.klass !== 'lane') {
+  if (prosperity > 0.35 && road.importance > 0.38 && road.kind !== 'access') {
     buildRoadSetts(m, t, pts, centerWidth, prosperity, roadGrade);
   }
   return true;
+}
+
+function roadSurfaceColor(surface: RoadSurface, prosperity: number, importance: number): RGB {
+  switch (surface) {
+    case 'stone':
+      return mix(PALETTE.plaza, PALETTE.stone, 0.48 + prosperity * 0.28);
+    case 'cobble':
+      return mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.58 + prosperity * 0.28);
+    case 'mixed':
+      return mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.34 + importance * 0.2);
+    case 'wood':
+      return mix(PALETTE.wood, PALETTE.timber, 0.35);
+    case 'dirt':
+      return mix(PALETTE.soil, PALETTE.roadDirt, 0.55);
+  }
 }
 
 function buildSurfaceRibbon(
@@ -544,115 +557,4 @@ function pointOnCircle(cx: number, cz: number, radius: number, angle: number): V
     x: cx + Math.cos(angle) * radius,
     z: cz + Math.sin(angle) * radius,
   };
-}
-
-function accessColor(access: BuildingAccess, prosperity: number): RGB {
-  switch (access.material) {
-    case 'stone':
-      return mix(PALETTE.plaza, PALETTE.stone, 0.55 + prosperity * 0.25);
-    case 'cobble':
-      return mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.55 + prosperity * 0.3);
-    case 'wood':
-      return mix(PALETTE.wood, PALETTE.timber, 0.35);
-    case 'dirt':
-      return mix(PALETTE.soil, PALETTE.roadDirt, 0.45);
-  }
-}
-
-function buildAccess(
-  m: Mesher,
-  t: TerrainData,
-  access: BuildingAccess,
-  prosperity: number,
-  waterLevel: number,
-): void {
-  const dx = access.end.x - access.start.x;
-  const dz = access.end.z - access.start.z;
-  const len = Math.hypot(dx, dz);
-  if (len < 0.05) return;
-
-  const ux = dx / len;
-  const uz = dz / len;
-  const nx = -uz;
-  const nz = ux;
-  const color = accessColor(access, prosperity);
-  const halfW = access.width / 2;
-  const lift = access.material === 'wood' ? 0.42 : 0.36;
-  const segments = Math.max(1, Math.ceil(len / 2.2));
-
-  for (let s = 0; s < segments; s++) {
-    const t0 = s / segments;
-    const t1 = (s + 1) / segments;
-    const c0 = {
-      x: access.start.x + dx * t0,
-      z: access.start.z + dz * t0,
-    };
-    const c1 = {
-      x: access.start.x + dx * t1,
-      z: access.start.z + dz * t1,
-    };
-    const l0 = { x: c0.x + nx * halfW, z: c0.z + nz * halfW };
-    const r0 = { x: c0.x - nx * halfW, z: c0.z - nz * halfW };
-    const l1 = { x: c1.x + nx * halfW, z: c1.z + nz * halfW };
-    const r1 = { x: c1.x - nx * halfW, z: c1.z - nz * halfW };
-    m.quad(
-      l0.x,
-      sampleHeight(t, l0.x, l0.z) + lift,
-      l0.z,
-      r0.x,
-      sampleHeight(t, r0.x, r0.z) + lift,
-      r0.z,
-      r1.x,
-      sampleHeight(t, r1.x, r1.z) + lift,
-      r1.z,
-      l1.x,
-      sampleHeight(t, l1.x, l1.z) + lift,
-      l1.z,
-      color,
-    );
-  }
-
-  const padDepth = Math.min(1.45, Math.max(0.8, access.width * 0.9));
-  const padWidth = access.width * 1.45;
-  const padCx = access.start.x + ux * padDepth * 0.28;
-  const padCz = access.start.z + uz * padDepth * 0.28;
-  const padY = sampleHeight(t, access.start.x, access.start.z) + lift + 0.04;
-  m.box(padCx, padY, padCz, padWidth, 0.16, padDepth, Math.atan2(ux, uz), color);
-
-  const apronWidth = access.width * (access.kind === 'water' ? 1.5 : 1.25);
-  const apronDepth = Math.min(1.2, Math.max(0.55, access.width * 0.65));
-  const apronCx = access.end.x - ux * apronDepth * 0.3;
-  const apronCz = access.end.z - uz * apronDepth * 0.3;
-  const apronColor = mix(color, access.kind === 'water' ? PALETTE.wood : PALETTE.plaza, 0.35);
-  m.box(
-    apronCx,
-    sampleHeight(t, apronCx, apronCz) + lift + 0.02,
-    apronCz,
-    apronWidth,
-    0.12,
-    apronDepth,
-    Math.atan2(ux, uz),
-    apronColor,
-  );
-
-  if (access.kind === 'water') {
-    const pierTop = Math.max(waterLevel + 0.5, sampleHeight(t, apronCx, apronCz) + 0.7);
-    const postColor = PALETTE.timberDark;
-    for (const side of [-1, 1]) {
-      const px = access.end.x + nx * (apronWidth * 0.42) * side;
-      const pz = access.end.z + nz * (apronWidth * 0.42) * side;
-      const bed = sampleHeight(t, px, pz) - 0.2;
-      m.cylinder(px, bed, pz, 0.16, Math.max(0.4, pierTop - bed), 6, postColor, true);
-    }
-    m.box(
-      access.end.x,
-      pierTop,
-      access.end.z,
-      apronWidth,
-      0.18,
-      0.18,
-      Math.atan2(ux, uz),
-      postColor,
-    );
-  }
 }

@@ -39,14 +39,6 @@ export interface WaterData {
   riverPath: Vec2[];
 }
 
-export type RoadClass = 'main' | 'street' | 'lane';
-
-export interface RoadSegment {
-  points: Vec2[];
-  width: number;
-  klass: RoadClass;
-}
-
 export type PlazaKind = 'civic' | 'market' | 'gate' | 'bridge' | 'courtyard';
 
 export interface Plaza {
@@ -55,19 +47,75 @@ export interface Plaza {
   kind: PlazaKind;
 }
 
-export type BuildingAccessKind = 'road' | 'plaza' | 'water';
-export type BuildingAccessMaterial = 'dirt' | 'cobble' | 'stone' | 'wood';
+export type RoadNodeId = string;
+export type RoadEdgeId = string;
 
-export interface BuildingAccess {
-  /** The building whose front threshold this path or apron serves. */
-  buildingId: number;
-  /** Threshold point just outside the front facade. */
-  start: Vec2;
-  /** Road, plaza edge or shoreline point the entrance answers to. */
-  end: Vec2;
+export type RoadNodeKind =
+  | 'center'
+  | 'gate'
+  | 'bridgehead'
+  | 'waterAccess'
+  | 'neighborhood'
+  | 'junction'
+  | 'entryCluster';
+
+export type RoadEdgeKind = 'approach' | 'street' | 'lane' | 'access';
+export type RoadSurface = 'dirt' | 'mixed' | 'cobble' | 'stone' | 'wood';
+export type ClearanceKind = 'road' | 'bridge' | 'plaza';
+
+export interface RoadNode {
+  id: RoadNodeId;
+  kind: RoadNodeKind;
+  position: Vec2;
+  /** 0..1 traffic and spatial significance. */
+  importance: number;
+}
+
+export interface WaterCrossing {
+  a: Vec2;
+  b: Vec2;
+  deckLevel: number;
   width: number;
-  kind: BuildingAccessKind;
-  material: BuildingAccessMaterial;
+}
+
+export interface RoadEdge {
+  id: RoadEdgeId;
+  from: RoadNodeId;
+  to: RoadNodeId;
+  points: Vec2[];
+  kind: RoadEdgeKind;
+  /** Visible/path width used by the renderer. */
+  width: number;
+  /** 0..1: derived from graph role, not visual styling. */
+  importance: number;
+  /** Reserved half-width around the road/bridge that buildings cannot enter. */
+  clearance: number;
+  /** Buildable band offset from the road centerline. */
+  frontage: number;
+  surface: RoadSurface;
+  waterCrossing: WaterCrossing | null;
+  /** Building served by a short secondary access edge, when applicable. */
+  buildingId?: number;
+}
+
+export interface ClearanceCorridor {
+  kind: ClearanceKind;
+  points: Vec2[];
+  radius: number;
+}
+
+export interface RoadGraph {
+  nodes: RoadNode[];
+  edges: RoadEdge[];
+  plazas: Plaza[];
+  bridges: Bridge[];
+  clearances: ClearanceCorridor[];
+  /** Rim anchor points where main roads exit — gate candidates. */
+  gateAnchors: Vec2[];
+  /** Approximate radius of the built-up settlement. */
+  settlementRadius: number;
+  /** Notable open junctions (for plaza seeding). */
+  junctions: Vec2[];
 }
 
 export type BuildingRole =
@@ -208,14 +256,11 @@ export interface World {
   terrain: TerrainData;
   water: WaterData;
   center: Vec2;
-  roads: RoadSegment[];
-  plazas: Plaza[];
-  accesses: BuildingAccess[];
+  roadGraph: RoadGraph;
   buildings: Building[];
   walls: WallSegment[];
   towers: Tower[];
   gates: Gate[];
-  bridges: Bridge[];
   plants: Plant[];
   summary: WorldSummary;
 }

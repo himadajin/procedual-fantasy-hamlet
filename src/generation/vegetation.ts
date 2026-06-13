@@ -18,16 +18,8 @@ import {
   clampInt,
 } from './grid';
 import { centerDistanceNorm, edgeInfluenceOnTerrain } from './fields';
-import type {
-  BuildingAccess,
-  Building,
-  Plant,
-  PlantKind,
-  RoadSegment,
-  TerrainData,
-  Vec2,
-  WaterData,
-} from './types';
+import { distanceToRoadGraphClearance } from './roads';
+import type { Building, Plant, PlantKind, RoadGraph, TerrainData, Vec2, WaterData } from './types';
 
 function isWater(terrain: TerrainData, water: WaterData, p: Vec2): boolean {
   const f = worldToCellF(terrain, p.x, p.z);
@@ -58,8 +50,7 @@ export function generateVegetation(
   terrain: TerrainData,
   water: WaterData,
   buildings: Building[],
-  roads: RoadSegment[],
-  accesses: BuildingAccess[],
+  roadGraph: RoadGraph,
   center: Vec2,
   enclosureRadius: number,
   settlementRadius: number,
@@ -103,12 +94,11 @@ export function generateVegetation(
       const onWater = isWater(terrain, water, p);
       const shore = !onWater && shoreProximity(terrain, water, p, 2.4);
       const slope = slopeAt(terrain, p.x, p.z);
-      const roadClearance = clearanceToRoad(p, roads);
-      const accessClearance = clearanceToAccess(p, accesses);
+      const roadClearance = distanceToRoadGraphClearance(roadGraph, p);
 
       // Skip built surfaces first; later rules may place low verge plants near,
       // but not on, roads and entrance paths.
-      if (roadClearance < 1.15 || accessClearance < 0.85) continue;
+      if (roadClearance < 0.9) continue;
 
       let blocked = false;
       for (const ex of exclusions) {
@@ -175,37 +165,6 @@ export function generateVegetation(
 
   void center;
   return plants;
-}
-
-function clearanceToRoad(p: Vec2, roads: RoadSegment[]): number {
-  let best = Infinity;
-  for (const road of roads) {
-    for (let i = 0; i < road.points.length - 1; i += 1) {
-      const d = distanceToSegment(p, road.points[i], road.points[i + 1]) - road.width * 0.5;
-      if (d < best) best = d;
-    }
-  }
-  return best;
-}
-
-function clearanceToAccess(p: Vec2, accesses: BuildingAccess[]): number {
-  let best = Infinity;
-  for (const access of accesses) {
-    const d = distanceToSegment(p, access.start, access.end) - access.width * 0.5;
-    if (d < best) best = d;
-  }
-  return best;
-}
-
-function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
-  const abx = b.x - a.x;
-  const abz = b.z - a.z;
-  const len2 = abx * abx + abz * abz || 1e-6;
-  let t = ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  const cx = a.x + abx * t;
-  const cz = a.z + abz * t;
-  return Math.hypot(p.x - cx, p.z - cz);
 }
 
 function makePlant(

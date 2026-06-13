@@ -28,15 +28,15 @@ export function generateWorld(input: GenerateInput): World {
   const terrain = generateTerrain(seedValue, params);
   const water = generateWater(seedValue, params, terrain);
   const { center } = pickCenter(seedValue, params, terrain, water);
-  const network = generateRoads(seedValue, params, terrain, water, center);
+  const primaryRoadGraph = generateRoads(seedValue, params, terrain, water, center);
   const defenses = generateDefenses(
     seedValue,
     params,
     terrain,
     water,
     center,
-    network.settlementRadius,
-    network.gateAnchors,
+    primaryRoadGraph.settlementRadius,
+    primaryRoadGraph.gateAnchors,
   );
   const settlement = generateSettlement(
     seedValue,
@@ -44,24 +44,22 @@ export function generateWorld(input: GenerateInput): World {
     terrain,
     water,
     center,
-    network.roads,
-    network.bridges,
+    primaryRoadGraph,
     defenses.gates,
     defenses.enclosure,
     defenses.enclosureRadius,
-    network.settlementRadius,
   );
+  const roadGraph = settlement.roadGraph;
   const plants = generateVegetation(
     seedValue,
     params,
     terrain,
     water,
     settlement.buildings,
-    network.roads,
-    settlement.accesses,
+    roadGraph,
     center,
     defenses.enclosureRadius,
-    network.settlementRadius,
+    roadGraph.settlementRadius,
   );
 
   const summary = buildSummary({
@@ -70,8 +68,8 @@ export function generateWorld(input: GenerateInput): World {
     params,
     buildings: settlement.buildings,
     towers: defenses.towers.length,
-    bridges: network.bridges.length,
-    accesses: settlement.accesses.length,
+    bridges: roadGraph.bridges.length,
+    accesses: roadGraph.edges.filter((edge) => edge.kind === 'access').length,
     plants: plants.length,
     hasWalls: defenses.hasWalls,
     hasMoat: defenses.hasMoat,
@@ -89,14 +87,11 @@ export function generateWorld(input: GenerateInput): World {
     terrain,
     water,
     center,
-    roads: network.roads,
-    plazas: settlement.plazas,
-    accesses: settlement.accesses,
+    roadGraph,
     buildings: settlement.buildings,
     walls: defenses.walls,
     towers: defenses.towers,
     gates: defenses.gates,
-    bridges: network.bridges,
     plants,
     summary,
   };
