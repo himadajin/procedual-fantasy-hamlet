@@ -324,6 +324,8 @@ function buildBridgeHead(m: Mesher, t: TerrainData, bridge: Bridge, prosperity: 
       rot,
       apronColor,
     );
+
+    buildSettPatch(m, t, approachCx, approachCz, rot, bridge.width * 1.05, depth * 1.1, prosperity);
   }
 }
 
@@ -346,8 +348,16 @@ function buildRibbon(m: Mesher, t: TerrainData, road: RoadEdge, prosperity: numb
     buildSurfaceRibbon(m, t, pts, edgeWidth, edgeOffset, edgeLift, vergeColor);
     buildSurfaceRibbon(m, t, pts, edgeWidth, -edgeOffset, edgeLift, vergeColor);
   }
-  if (prosperity > 0.35 && road.importance > 0.38 && road.kind !== 'access') {
-    buildRoadSetts(m, t, pts, centerWidth, prosperity, roadGrade);
+
+  if (road.surface === 'wood') {
+    buildWoodPlanks(m, t, pts, centerWidth, road.importance);
+  } else if (road.surface === 'stone' || road.surface === 'cobble') {
+    buildRoadSetts(m, t, pts, centerWidth, prosperity, roadGrade, road.surface);
+  } else if (road.surface === 'mixed') {
+    buildRoadSetts(m, t, pts, centerWidth * 0.86, prosperity * 0.82, roadGrade * 0.72, 'mixed');
+    buildDirtRoadMarks(m, t, pts, centerWidth, road.importance, prosperity);
+  } else {
+    buildDirtRoadMarks(m, t, pts, centerWidth, road.importance, prosperity);
   }
   return true;
 }
@@ -355,9 +365,9 @@ function buildRibbon(m: Mesher, t: TerrainData, road: RoadEdge, prosperity: numb
 function roadSurfaceColor(surface: RoadSurface, prosperity: number, importance: number): RGB {
   switch (surface) {
     case 'stone':
-      return mix(PALETTE.plaza, PALETTE.stone, 0.48 + prosperity * 0.28);
+      return mix(PALETTE.roadCobble, PALETTE.stone, 0.24 + prosperity * 0.18);
     case 'cobble':
-      return mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.58 + prosperity * 0.28);
+      return mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.46 + prosperity * 0.2);
     case 'mixed':
       return mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.34 + importance * 0.2);
     case 'wood':
@@ -414,12 +424,19 @@ function buildRoadSetts(
   width: number,
   prosperity: number,
   roadGrade: number,
+  surface: RoadSurface,
 ): void {
-  const color = mix(PALETTE.roadCobble, PALETTE.stoneDark, 0.28);
-  const spacing = 2.7 - prosperity * 0.75;
-  const stoneDepth = 0.18 + prosperity * 0.05;
-  const stoneHalfWidth = Math.min(0.16, width * 0.055);
-  const rows = roadGrade > 0.85 ? [-0.28, 0, 0.28] : [-0.2, 0.2];
+  const baseColor =
+    surface === 'stone'
+      ? mix(PALETTE.roadCobble, PALETTE.stoneDark, 0.16 + prosperity * 0.12)
+      : surface === 'mixed'
+        ? mix(PALETTE.roadDirt, PALETTE.roadCobble, 0.54)
+        : mix(PALETTE.roadCobble, PALETTE.stoneDark, 0.34);
+  const cellLen = surface === 'mixed' ? 1.25 : 0.82 - prosperity * 0.18;
+  const rowGap = surface === 'mixed' ? 0.78 : 0.56 - prosperity * 0.08;
+  const rows: number[] = [];
+  const half = width * 0.43;
+  for (let off = -half; off <= half + 0.01; off += rowGap) rows.push(off);
   let carried = 0;
 
   for (let i = 0; i < pts.length - 1; i++) {
@@ -434,30 +451,41 @@ function buildRoadSetts(
     const nx = -uz;
     const nz = ux;
 
-    for (let d = spacing - carried; d < len; d += spacing) {
+    for (let d = cellLen - carried; d < len; d += cellLen) {
       for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-        const rowOffset = rows[rowIndex] * width * roadGrade;
-        const alongOffset = rowIndex % 2 === 0 ? 0 : spacing * 0.35;
-        const along = Math.min(len - 0.05, d + alongOffset);
+        const skip = surface === 'mixed' && settHash(i, rowIndex, Math.floor(d * 3)) > 0.58;
+        if (skip) continue;
+        const hash = settHash(i, rowIndex, Math.floor(d * 5));
+        const rowOffset = rows[rowIndex] + (hash - 0.5) * rowGap * 0.26;
+        if (Math.abs(rowOffset) > half) continue;
+        const alongOffset =
+          (rowIndex % 2 === 0 ? 0 : cellLen * 0.45) + (hash - 0.5) * cellLen * 0.2;
+        const along = Math.min(len - 0.05, Math.max(0.05, d + alongOffset));
+        const stoneLen = cellLen * (0.66 + hash * 0.32);
+        const stoneHalfWidth = rowGap * (0.36 + settHash(rowIndex, i, Math.floor(d * 7)) * 0.14);
         const cx = a.x + ux * along + nx * rowOffset;
         const cz = a.z + uz * along + nz * rowOffset;
         const p0 = {
-          x: cx - ux * stoneDepth - nx * stoneHalfWidth,
-          z: cz - uz * stoneDepth - nz * stoneHalfWidth,
+          x: cx - ux * stoneLen * 0.5 - nx * stoneHalfWidth,
+          z: cz - uz * stoneLen * 0.5 - nz * stoneHalfWidth,
         };
         const p1 = {
-          x: cx - ux * stoneDepth + nx * stoneHalfWidth,
-          z: cz - uz * stoneDepth + nz * stoneHalfWidth,
+          x: cx - ux * stoneLen * 0.5 + nx * stoneHalfWidth,
+          z: cz - uz * stoneLen * 0.5 + nz * stoneHalfWidth,
         };
         const p2 = {
-          x: cx + ux * stoneDepth + nx * stoneHalfWidth,
-          z: cz + uz * stoneDepth + nz * stoneHalfWidth,
+          x: cx + ux * stoneLen * 0.5 + nx * stoneHalfWidth,
+          z: cz + uz * stoneLen * 0.5 + nz * stoneHalfWidth,
         };
         const p3 = {
-          x: cx + ux * stoneDepth - nx * stoneHalfWidth,
-          z: cz + uz * stoneDepth - nz * stoneHalfWidth,
+          x: cx + ux * stoneLen * 0.5 - nx * stoneHalfWidth,
+          z: cz + uz * stoneLen * 0.5 - nz * stoneHalfWidth,
         };
-        const lift = 0.42;
+        const lift = surface === 'mixed' ? 0.43 : 0.46;
+        const color =
+          rowIndex % 2 === 0
+            ? shade(baseColor, 0.86 + hash * 0.2)
+            : shade(baseColor, 0.78 + hash * 0.18);
         m.quad(
           p0.x,
           sampleHeight(t, p0.x, p0.z) + lift,
@@ -471,12 +499,207 @@ function buildRoadSetts(
           p3.x,
           sampleHeight(t, p3.x, p3.z) + lift,
           p3.z,
-          rowIndex % 2 === 0 ? color : shade(color, 0.88),
+          color,
         );
       }
     }
+    carried = (carried + len) % cellLen;
+  }
+
+  if (roadGrade > 0.62) {
+    buildSurfaceRibbon(m, t, pts, 0.18, half + 0.09, 0.5, shade(baseColor, 0.76));
+    buildSurfaceRibbon(m, t, pts, 0.18, -half - 0.09, 0.5, shade(baseColor, 0.76));
+  }
+}
+
+function buildDirtRoadMarks(
+  m: Mesher,
+  t: TerrainData,
+  pts: Vec2[],
+  width: number,
+  importance: number,
+  prosperity: number,
+): void {
+  const rutColor = mix(PALETTE.soil, PALETTE.roadDirt, 0.28);
+  const stoneColor = mix(PALETTE.roadCobble, PALETTE.sand, 0.22);
+  const rutOffset = Math.max(0.32, width * 0.24);
+  const rutWidth = Math.max(0.16, width * 0.08);
+  buildSurfaceRibbon(m, t, pts, rutWidth, rutOffset, 0.39, shade(rutColor, 0.74));
+  buildSurfaceRibbon(m, t, pts, rutWidth, -rutOffset, 0.39, shade(rutColor, 0.78));
+  if (importance + prosperity < 0.62) return;
+
+  let carried = 0;
+  const spacing = 3.2 - importance * 1.1;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.05) continue;
+    const ux = dx / len;
+    const uz = dz / len;
+    const nx = -uz;
+    const nz = ux;
+    for (let d = spacing - carried; d < len; d += spacing) {
+      const h = settHash(i, Math.floor(d * 2), 91);
+      if (h > 0.55 + prosperity * 0.2) continue;
+      const lateral = (h - 0.5) * width * 0.45;
+      const stoneLen = 0.46 + h * 0.22;
+      const stoneWidth = 0.22 + settHash(i, Math.floor(d * 4), 32) * 0.16;
+      const cx = a.x + ux * d + nx * lateral;
+      const cz = a.z + uz * d + nz * lateral;
+      const p0 = {
+        x: cx - ux * stoneLen - nx * stoneWidth,
+        z: cz - uz * stoneLen - nz * stoneWidth,
+      };
+      const p1 = {
+        x: cx - ux * stoneLen + nx * stoneWidth,
+        z: cz - uz * stoneLen + nz * stoneWidth,
+      };
+      const p2 = {
+        x: cx + ux * stoneLen + nx * stoneWidth,
+        z: cz + uz * stoneLen + nz * stoneWidth,
+      };
+      const p3 = {
+        x: cx + ux * stoneLen - nx * stoneWidth,
+        z: cz + uz * stoneLen - nz * stoneWidth,
+      };
+      m.quad(
+        p0.x,
+        sampleHeight(t, p0.x, p0.z) + 0.44,
+        p0.z,
+        p1.x,
+        sampleHeight(t, p1.x, p1.z) + 0.44,
+        p1.z,
+        p2.x,
+        sampleHeight(t, p2.x, p2.z) + 0.44,
+        p2.z,
+        p3.x,
+        sampleHeight(t, p3.x, p3.z) + 0.44,
+        p3.z,
+        shade(stoneColor, 0.82 + h * 0.18),
+      );
+    }
     carried = (carried + len) % spacing;
   }
+}
+
+function buildWoodPlanks(
+  m: Mesher,
+  t: TerrainData,
+  pts: Vec2[],
+  width: number,
+  importance: number,
+): void {
+  const plankColor = mix(PALETTE.wood, PALETTE.timber, 0.38);
+  const spacing = 0.9;
+  let carried = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.05) continue;
+    const ux = dx / len;
+    const uz = dz / len;
+    const nx = -uz;
+    const nz = ux;
+    for (let d = spacing - carried; d < len; d += spacing) {
+      const h = settHash(i, Math.floor(d * 3), 17);
+      const cx = a.x + ux * d;
+      const cz = a.z + uz * d;
+      const plankDepth = 0.16 + importance * 0.08;
+      const plankHalf = width * (0.38 + h * 0.04);
+      const p0 = {
+        x: cx - ux * plankDepth - nx * plankHalf,
+        z: cz - uz * plankDepth - nz * plankHalf,
+      };
+      const p1 = {
+        x: cx - ux * plankDepth + nx * plankHalf,
+        z: cz - uz * plankDepth + nz * plankHalf,
+      };
+      const p2 = {
+        x: cx + ux * plankDepth + nx * plankHalf,
+        z: cz + uz * plankDepth + nz * plankHalf,
+      };
+      const p3 = {
+        x: cx + ux * plankDepth - nx * plankHalf,
+        z: cz + uz * plankDepth - nz * plankHalf,
+      };
+      m.quad(
+        p0.x,
+        sampleHeight(t, p0.x, p0.z) + 0.49,
+        p0.z,
+        p1.x,
+        sampleHeight(t, p1.x, p1.z) + 0.49,
+        p1.z,
+        p2.x,
+        sampleHeight(t, p2.x, p2.z) + 0.49,
+        p2.z,
+        p3.x,
+        sampleHeight(t, p3.x, p3.z) + 0.49,
+        p3.z,
+        shade(plankColor, 0.78 + h * 0.22),
+      );
+    }
+    carried = (carried + len) % spacing;
+  }
+}
+
+function buildSettPatch(
+  m: Mesher,
+  t: TerrainData,
+  cx: number,
+  cz: number,
+  rot: number,
+  width: number,
+  depth: number,
+  prosperity: number,
+): void {
+  const cols = Math.max(2, Math.round(width / 0.62));
+  const rows = Math.max(2, Math.round(depth / 0.72));
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  const color = mix(PALETTE.roadCobble, PALETTE.stoneDark, 0.2 + prosperity * 0.16);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const h = settHash(r, c, Math.floor((cx + cz) * 10));
+      const lx = -width / 2 + ((c + 0.5) / cols) * width + (h - 0.5) * 0.14;
+      const lz = -depth / 2 + ((r + 0.5) / rows) * depth;
+      const sx = (width / cols) * (0.72 + h * 0.12);
+      const sz = (depth / rows) * (0.7 + settHash(c, r, 44) * 0.16);
+      const p = (x: number, z: number): Vec2 => ({
+        x: cx + x * cos + z * sin,
+        z: cz - x * sin + z * cos,
+      });
+      const p0 = p(lx - sx / 2, lz - sz / 2);
+      const p1 = p(lx + sx / 2, lz - sz / 2);
+      const p2 = p(lx + sx / 2, lz + sz / 2);
+      const p3 = p(lx - sx / 2, lz + sz / 2);
+      m.quad(
+        p0.x,
+        sampleHeight(t, p0.x, p0.z) + 0.51,
+        p0.z,
+        p1.x,
+        sampleHeight(t, p1.x, p1.z) + 0.51,
+        p1.z,
+        p2.x,
+        sampleHeight(t, p2.x, p2.z) + 0.51,
+        p2.z,
+        p3.x,
+        sampleHeight(t, p3.x, p3.z) + 0.51,
+        p3.z,
+        shade(color, 0.8 + h * 0.18),
+      );
+    }
+  }
+}
+
+function settHash(a: number, b: number, salt: number): number {
+  const x = Math.sin((a * 127.1 + b * 311.7 + salt * 74.7) * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
 }
 
 function buildPlaza(m: Mesher, t: TerrainData, plaza: Plaza, prosperity: number): void {

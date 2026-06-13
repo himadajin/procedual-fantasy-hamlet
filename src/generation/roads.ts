@@ -324,7 +324,7 @@ function makeEdge(
     importance,
     clearance: width * 0.5 + 0.9,
     frontage: width * 0.5 + lerp(3.0, 2.0, frac(params.settlementPressure)),
-    surface: crossing ? 'wood' : surfaceFor(importance, params),
+    surface: surfaceFor(importance, params),
     waterCrossing: crossing,
   };
 }
