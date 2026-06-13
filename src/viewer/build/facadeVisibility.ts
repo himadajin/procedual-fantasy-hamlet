@@ -4,6 +4,7 @@ export type FacadeFace = 'front' | 'back' | 'right' | 'left';
 
 export interface FacadeExposure {
   face: FacadeFace;
+  /** Blocked lateral spans in the rendered tier's own local coordinates. */
   blockedSpans: FacadeSpan[];
 }
 
@@ -45,6 +46,8 @@ export function tierFacadeExposures(building: Building, tierIndex: number): Faca
   return FACE_SPECS.map((spec) => {
     const plane = facePlane(tierRect, spec.normalAxis, spec.normalSign);
     const ownLat = rangeFor(tierRect, spec.lateralAxis);
+    const ownLatOrigin = centerFor(tierRect, spec.lateralAxis);
+    const ownHalf = spec.lateralAxis === 'x' ? tier.width / 2 : tier.depth / 2;
     const blockedSpans: FacadeSpan[] = [];
 
     building.tiers.forEach((other, otherIndex) => {
@@ -57,9 +60,11 @@ export function tierFacadeExposures(building: Building, tierIndex: number): Faca
       const overlap = intersect(ownLat, otherLat);
       if (!overlap) return;
 
+      const localMin = Math.max(ownLat.min, overlap.min - EDGE_CLEARANCE) - ownLatOrigin;
+      const localMax = Math.min(ownLat.max, overlap.max + EDGE_CLEARANCE) - ownLatOrigin;
       blockedSpans.push({
-        min: Math.max(ownLat.min, overlap.min - EDGE_CLEARANCE),
-        max: Math.min(ownLat.max, overlap.max + EDGE_CLEARANCE),
+        min: clamp(localMin, -ownHalf, ownHalf),
+        max: clamp(localMax, -ownHalf, ownHalf),
       });
     });
 
@@ -101,6 +106,15 @@ function facePlane(rect: LocalRect, axis: 'x' | 'z', sign: -1 | 1): number {
 function rangeFor(rect: LocalRect, axis: 'x' | 'z'): FacadeSpan {
   if (axis === 'x') return { min: rect.minX, max: rect.maxX };
   return { min: rect.minZ, max: rect.maxZ };
+}
+
+function centerFor(rect: LocalRect, axis: 'x' | 'z'): number {
+  if (axis === 'x') return (rect.minX + rect.maxX) / 2;
+  return (rect.minZ + rect.maxZ) / 2;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }
 
 function crossesFacePlane(rect: LocalRect, axis: 'x' | 'z', sign: -1 | 1, plane: number): boolean {

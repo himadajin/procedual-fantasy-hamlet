@@ -16,7 +16,12 @@ import type {
   WallSegment,
   World,
 } from '../../generation/types';
-import { isFacadeSpanExposed, tierFacadeExposures } from './facadeVisibility';
+import {
+  isFacadeSpanExposed,
+  tierFacadeExposures,
+  type FacadeExposure,
+  type FacadeSpan,
+} from './facadeVisibility';
 import { Mesher } from './mesher';
 import { PALETTE, mix, shade, wallColor, type RGB } from './palette';
 
@@ -74,6 +79,20 @@ function addFacade(m: Mesher, b: Building, tierIndex: number, baseY: number): vo
     const cols = Math.max(1, Math.floor((face.half * 2 - 0.8) / spacing));
     const faceCx = cx + face.out.x * face.off;
     const faceCz = cz + face.out.z * face.off;
+    addFacadeBands(
+      m,
+      b,
+      faceCx,
+      faceCz,
+      face.out,
+      face.wdir,
+      face.half,
+      exposure,
+      baseY,
+      h,
+      storeys,
+      storeyH,
+    );
     const startRow = storeys > 1 ? 0 : 0;
     for (let row = startRow; row < storeys; row++) {
       const wy = baseY + (row + 0.55) * storeyH;
@@ -109,6 +128,7 @@ function addFacade(m: Mesher, b: Building, tierIndex: number, baseY: number): vo
     // Door on the front face, ground storey, centered.
     if (faceIdx === FRONT && isFacadeSpanExposed(exposure, 0, 0.9, 0.35)) {
       const doorH = Math.min(2.0, storeyH * 0.85);
+      addDoorSurround(m, faceCx, baseY, faceCz, face.out, face.wdir, doorH, trimColor);
       addPanel(
         m,
         faceCx,
@@ -124,11 +144,128 @@ function addFacade(m: Mesher, b: Building, tierIndex: number, baseY: number): vo
       );
     }
   });
+}
 
-  // Half-timber framing: corner posts + a couple of bands of dark beams.
-  if (b.wallMaterial === 'halfTimber') {
-    addTimberFrame(m, cx, cz, w, d, h, rot, baseY, storeys, storeyH);
+function facadeBandColor(b: Building): RGB {
+  switch (b.wallMaterial) {
+    case 'stone':
+      return shade(PALETTE.stoneDark, b.role === 'monument' ? 1.05 : 0.95);
+    case 'timber':
+      return PALETTE.timberDark;
+    case 'halfTimber':
+      return PALETTE.beam;
+    case 'plaster':
+      return b.refinement > 0.5 ? shade(PALETTE.plaster, 0.78) : PALETTE.beam;
   }
+}
+
+function addFacadeBands(
+  m: Mesher,
+  b: Building,
+  faceCx: number,
+  faceCz: number,
+  out: { x: number; z: number },
+  wdir: { x: number; z: number },
+  half: number,
+  exposure: FacadeExposure,
+  baseY: number,
+  height: number,
+  storeys: number,
+  storeyH: number,
+): void {
+  const col = facadeBandColor(b);
+  const bandH = b.role === 'monument' || b.wallMaterial === 'stone' ? 0.24 : 0.16;
+  for (const segment of exposedFacadeSegments(exposure, half, 0.18)) {
+    const width = segment.max - segment.min;
+    if (width < 0.65) continue;
+    const lx = (segment.min + segment.max) / 2;
+    addPanel(m, faceCx, baseY + 0.28, faceCz, out, wdir, lx, width / 2, bandH / 2, col, 0.11);
+    addPanel(
+      m,
+      faceCx,
+      baseY + height - bandH * 0.65,
+      faceCz,
+      out,
+      wdir,
+      lx,
+      width / 2,
+      bandH / 2,
+      col,
+      0.1,
+    );
+
+    if (storeys > 1 && b.refinement > 0.35) {
+      for (let s = 1; s < storeys; s++) {
+        addPanel(
+          m,
+          faceCx,
+          baseY + s * storeyH,
+          faceCz,
+          out,
+          wdir,
+          lx,
+          width / 2,
+          bandH * 0.35,
+          col,
+          0.1,
+        );
+      }
+    }
+  }
+
+  const postW = b.role === 'monument' || b.wallMaterial === 'stone' ? 0.26 : 0.18;
+  for (const lx of [-half + postW * 0.65, half - postW * 0.65]) {
+    if (!isFacadeSpanExposed(exposure, lx, postW * 1.2, 0.25)) continue;
+    addPanel(
+      m,
+      faceCx,
+      baseY + height * 0.5,
+      faceCz,
+      out,
+      wdir,
+      lx,
+      postW / 2,
+      height * 0.48,
+      col,
+      0.11,
+    );
+  }
+}
+
+function exposedFacadeSegments(
+  exposure: FacadeExposure,
+  half: number,
+  inset: number,
+): FacadeSpan[] {
+  let cursor = -half + inset;
+  const end = half - inset;
+  const segments: FacadeSpan[] = [];
+  for (const blocked of exposure.blockedSpans) {
+    const min = Math.max(-half, blocked.min - inset);
+    const max = Math.min(half, blocked.max + inset);
+    if (min > cursor) segments.push({ min: cursor, max: min });
+    cursor = Math.max(cursor, max);
+  }
+  if (cursor < end) segments.push({ min: cursor, max: end });
+  return segments.filter((span) => span.max - span.min > 0.25);
+}
+
+function addDoorSurround(
+  m: Mesher,
+  faceCx: number,
+  baseY: number,
+  faceCz: number,
+  out: { x: number; z: number },
+  wdir: { x: number; z: number },
+  doorH: number,
+  color: RGB,
+): void {
+  const jambH = doorH * 1.12;
+  const jambY = baseY + jambH / 2;
+  for (const side of [-1, 1]) {
+    addPanel(m, faceCx, jambY, faceCz, out, wdir, side * 0.58, 0.08, jambH / 2, color, 0.13);
+  }
+  addPanel(m, faceCx, baseY + jambH, faceCz, out, wdir, 0, 0.72, 0.08, color, 0.13);
 }
 
 /** A shallow architectural piece (window / door / trim) protruding from a wall face. */
@@ -214,52 +351,14 @@ function outwardQuad(
   }
 }
 
-function addTimberFrame(
-  m: Mesher,
-  cx: number,
-  cz: number,
-  w: number,
-  d: number,
-  h: number,
-  rot: number,
-  baseY: number,
-  storeys: number,
-  storeyH: number,
-): void {
-  const beam = PALETTE.beam;
-  const post = 0.28;
-  // Four corner posts.
-  const cos = Math.cos(rot),
-    sin = Math.sin(rot);
-  const corner = (lx: number, lz: number): [number, number] => [
-    cx + lx * cos + lz * sin,
-    cz - lx * sin + lz * cos,
-  ];
-  const corners = [
-    corner(-w / 2, -d / 2),
-    corner(w / 2, -d / 2),
-    corner(w / 2, d / 2),
-    corner(-w / 2, d / 2),
-  ];
-  for (const [px, pz] of corners) {
-    m.box(px, baseY + h / 2, pz, post, h, post, rot, beam);
-  }
-  // Horizontal bands between storeys.
-  for (let s = 1; s < storeys; s++) {
-    const y = baseY + s * storeyH;
-    m.box(cx, y, cz, w + 0.05, 0.18, d + 0.05, rot, beam);
-  }
-  // Top plate.
-  m.box(cx, baseY + h, cz, w + 0.05, 0.2, d + 0.05, rot, beam);
-}
-
 function addRoof(m: Mesher, b: Building, tier: BuildingTier, baseY: number): void {
   const { x: cx, z: cz } = tierWorld(b, tier);
   const col = roofColor(b);
-  const rot = b.rotation + (tier.roofYaw ?? roofYawForFootprint(tier.width, tier.depth));
+  const plan = roofPlanForTier(b, tier);
+  const rot = plan.rotation;
   const roof = tier.roof ?? b.roof;
-  const w = tier.width;
-  const d = tier.depth;
+  const w = plan.width;
+  const d = plan.depth;
   const rh = tierRoofHeight(b, tier);
   switch (roof) {
     case 'gable':
@@ -286,6 +385,18 @@ function addRoof(m: Mesher, b: Building, tier: BuildingTier, baseY: number): voi
     default:
       break;
   }
+}
+
+function roofPlanForTier(
+  b: Building,
+  tier: BuildingTier,
+): { width: number; depth: number; rotation: number } {
+  const yaw = tier.roofYaw ?? roofYawForFootprint(tier.width, tier.depth);
+  const isQuarterTurn = Math.abs(Math.sin(yaw)) > Math.abs(Math.cos(yaw));
+  if (isQuarterTurn) {
+    return { width: tier.depth, depth: tier.width, rotation: b.rotation + yaw };
+  }
+  return { width: tier.width, depth: tier.depth, rotation: b.rotation + yaw };
 }
 
 function roofYawForFootprint(width: number, depth: number): number {
