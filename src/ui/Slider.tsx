@@ -2,6 +2,7 @@
  * A single labeled parameter slider (0..100) with a one-line description.
  * Dragging only edits the draft value; nothing regenerates until Generate.
  */
+import type { FormEvent } from 'react';
 import type { ParamMeta } from '../generation/params';
 
 interface SliderProps {
@@ -11,6 +12,10 @@ interface SliderProps {
 }
 
 export function Slider({ meta, value, onChange }: SliderProps): JSX.Element {
+  const handleInput = (e: FormEvent<HTMLInputElement>) => {
+    onChange(meta.key, Number(e.currentTarget.value));
+  };
+
   return (
     <div className="slider">
       <div className="slider-head">
@@ -27,7 +32,8 @@ export function Slider({ meta, value, onChange }: SliderProps): JSX.Element {
         step={1}
         value={value}
         aria-describedby={`d-${meta.key}`}
-        onChange={(e) => onChange(meta.key, Number(e.target.value))}
+        onInput={handleInput}
+        onChange={handleInput}
       />
       <p id={`d-${meta.key}`} className="slider-blurb">
         {meta.blurb}

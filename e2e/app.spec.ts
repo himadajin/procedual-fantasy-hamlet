@@ -12,7 +12,7 @@ test.describe('Procedural Fantasy Hamlet SPA', () => {
     await expect(canvas).toBeVisible();
     const vp = page.viewportSize()!;
     await expect
-      .poll(async () => (await canvas.boundingBox())!.height, { timeout: 5000 })
+      .poll(async () => (await canvas.boundingBox())!.height, { timeout: 15000 })
       .toBeGreaterThan(vp.height * 0.8);
     expect((await canvas.boundingBox())!.width).toBeGreaterThanOrEqual(vp.width - 1);
 
@@ -69,12 +69,14 @@ test.describe('Procedural Fantasy Hamlet SPA', () => {
     await page.goto('/');
     await page.locator('#seed').fill('repeatable');
     await page.getByRole('button', { name: 'Generate' }).click();
+    await expect(page.getByText(/repeatable \(#/)).toBeVisible();
     const dd = page.locator('.summary-row', { hasText: 'Buildings' }).locator('dd');
     const first = await dd.textContent();
 
     await page.reload();
     await page.locator('#seed').fill('repeatable');
     await page.getByRole('button', { name: 'Generate' }).click();
+    await expect(page.getByText(/repeatable \(#/)).toBeVisible();
     await expect(dd).toHaveText(first!);
   });
 

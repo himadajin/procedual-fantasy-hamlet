@@ -16,6 +16,7 @@ import type {
   WallSegment,
   World,
 } from '../../generation/types';
+import { isFacadeSpanExposed, tierFacadeExposures } from './facadeVisibility';
 import { Mesher } from './mesher';
 import { PALETTE, mix, shade, wallColor, type RGB } from './palette';
 
@@ -39,8 +40,9 @@ function roofColor(b: Building): RGB {
   return PALETTE.roofThatch;
 }
 
-/** Window grid + door + (for half-timber) framing on one tier's four faces. */
-function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): void {
+/** Window grid + door + (for half-timber) framing on one tier's exposed faces. */
+function addFacade(m: Mesher, b: Building, tierIndex: number, baseY: number): void {
+  const tier = b.tiers[tierIndex];
   const { x: cx, z: cz } = tierWorld(b, tier);
   const w = tier.width;
   const d = tier.depth;
@@ -65,7 +67,10 @@ function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): v
   const winH = Math.min(1.1, storeyH * 0.5);
   const spacing = b.role === 'monument' ? 2.6 : 1.9;
 
+  const exposures = tierFacadeExposures(b, tierIndex);
+
   faces.forEach((face, faceIdx) => {
+    const exposure = exposures[faceIdx];
     const cols = Math.max(1, Math.floor((face.half * 2 - 0.8) / spacing));
     const faceCx = cx + face.out.x * face.off;
     const faceCz = cz + face.out.z * face.off;
@@ -81,6 +86,7 @@ function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): v
           Math.sin((cx + faceIdx * 13.1 + cIdx * 7.3 + row * 3.7) * 12.9898) * 43758.5,
         );
         if (hsh - Math.floor(hsh) > rowProb) continue;
+        if (!isFacadeSpanExposed(exposure, lx, winW)) continue;
         addPanel(m, faceCx, wy, faceCz, face.out, face.wdir, lx, winW, winH, winColor, 0.1);
         // Slight lintel/sill trim when refined.
         if (b.refinement > 0.55) {
@@ -101,7 +107,7 @@ function addFacade(m: Mesher, b: Building, tier: BuildingTier, baseY: number): v
       }
     }
     // Door on the front face, ground storey, centered.
-    if (faceIdx === FRONT) {
+    if (faceIdx === FRONT && isFacadeSpanExposed(exposure, 0, 0.9, 0.35)) {
       const doorH = Math.min(2.0, storeyH * 0.85);
       addPanel(
         m,
@@ -363,7 +369,7 @@ function addBuilding(m: Mesher, b: Building, terrain: TerrainData): void {
     const baseY = groundY + tier.baseOffset;
     const col = wallColor(b.wallMaterial);
     m.box(x, baseY + tier.height / 2, z, tier.width, tier.height, tier.depth, b.rotation, col);
-    addFacade(m, b, tier, baseY);
+    addFacade(m, b, ti, baseY);
     addRoof(m, b, tier, baseY + tier.height);
   }
 
