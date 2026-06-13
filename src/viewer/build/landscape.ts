@@ -1,0 +1,199 @@
+/**
+ * Landscape mesh builders: the terrain shell, the water surface (only over
+ * water cells, depth-shaded), and the road/plaza ribbons that sit just above
+ * the ground. All vertex-colored, all merged per layer for cheap drawing.
+ */
+import { BufferAttribute, BufferGeometry } from 'three';
+import { idx, sampleHeight } from '../../generation/grid';
+import type { Plaza, RoadSegment, TerrainData, Vec2, World } from '../../generation/types';
+import { Mesher } from './mesher';
+import { PALETTE, mix, shade, type RGB } from './palette';
+
+function smooth01(e0: number, e1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Terrain surface with smooth normals and height/slope/shore vertex colors. */
+export function buildTerrainGeometry(world: World): BufferGeometry {
+  const t = world.terrain;
+  const n = t.size;
+  const level = world.water.level;
+  const positions = new Float32Array(n * n * 3);
+  const normals = new Float32Array(n * n * 3);
+  const colors = new Float32Array(n * n * 3);
+  const span = Math.max(1e-3, t.maxHeight - t.minHeight);
+
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const k = idx(n, i, j);
+      const h = t.heights[k];
+      const x = -t.half + i * t.cellSize;
+      const z = -t.half + j * t.cellSize;
+      positions[k * 3] = x;
+      positions[k * 3 + 1] = h;
+      positions[k * 3 + 2] = z;
+
+      // Normal via central differences.
+      const hl = t.heights[idx(n, Math.max(0, i - 1), j)];
+      const hr = t.heights[idx(n, Math.min(n - 1, i + 1), j)];
+      const hd = t.heights[idx(n, i, Math.max(0, j - 1))];
+      const hu = t.heights[idx(n, i, Math.min(n - 1, j + 1))];
+      const nx = hl - hr;
+      const nz = hd - hu;
+      const ny = 2 * t.cellSize;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      normals[k * 3] = nx / len;
+      normals[k * 3 + 1] = ny / len;
+      normals[k * 3 + 2] = nz / len;
+
+      const slope = Math.hypot(hr - hl, hu - hd) / (2 * t.cellSize);
+      const heightNorm = (h - t.minHeight) / span;
+      const c = terrainColor(h, heightNorm, slope, level);
+      colors[k * 3] = c.r;
+      colors[k * 3 + 1] = c.g;
+      colors[k * 3 + 2] = c.b;
+    }
+  }
+
+  // Indices.
+  const indices: number[] = [];
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      const a = idx(n, i, j);
+      const b = idx(n, i + 1, j);
+      const c = idx(n, i, j + 1);
+      const d = idx(n, i + 1, j + 1);
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(positions, 3));
+  g.setAttribute('normal', new BufferAttribute(normals, 3));
+  g.setAttribute('color', new BufferAttribute(colors, 3));
+  g.setIndex(indices);
+  g.computeBoundingSphere();
+  return g;
+}
+
+function terrainColor(h: number, heightNorm: number, slope: number, level: number): RGB {
+  // Grass gradient by elevation.
+  let c = mix(PALETTE.grassLow, PALETTE.grassHigh, heightNorm);
+  c = mix(c, PALETTE.grassDry, Math.max(0, heightNorm - 0.6) * 1.2);
+  // Rocky on steep slopes.
+  const rockT = smooth01(0.4, 0.95, slope);
+  c = mix(c, h > level + 6 ? PALETTE.rockDark : PALETTE.rock, rockT);
+  // Sandy/muddy shoreline just above the water.
+  const shoreT = smooth01(2.4, 0.2, h - level) * (1 - rockT);
+  c = mix(c, PALETTE.sand, shoreT * 0.8);
+  // Darker submerged bed below the water line.
+  if (h < level) {
+    const depth = smooth01(0, 4, level - h);
+    c = mix(mix(c, PALETTE.soil, 0.6), shade(PALETTE.soil, 0.6), depth);
+  }
+  return c;
+}
+
+/** Water surface limited to water cells, shaded by depth. */
+export function buildWaterGeometry(world: World): BufferGeometry | null {
+  const t = world.terrain;
+  const n = t.size;
+  const level = world.water.level;
+  const m = new Mesher();
+  const surfaceY = level + 0.04;
+  let any = false;
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      // A water quad if all four corners are flagged water.
+      const k00 = world.water.mask[idx(n, i, j)];
+      const k10 = world.water.mask[idx(n, i + 1, j)];
+      const k01 = world.water.mask[idx(n, i, j + 1)];
+      const k11 = world.water.mask[idx(n, i + 1, j + 1)];
+      if (!(k00 || k10 || k01 || k11)) continue;
+      any = true;
+      const x0 = -t.half + i * t.cellSize;
+      const z0 = -t.half + j * t.cellSize;
+      const x1 = x0 + t.cellSize;
+      const z1 = z0 + t.cellSize;
+      const depth = level - t.heights[idx(n, i, j)];
+      const col = mix(PALETTE.waterShallow, PALETTE.waterDeep, smooth01(0, 5, depth));
+      m.quad(x0, surfaceY, z0, x1, surfaceY, z0, x1, surfaceY, z1, x0, surfaceY, z1, col);
+    }
+  }
+  if (!any) return null;
+  return m.toGeometry();
+}
+
+/** Road ribbons and plaza pavings, hugging the terrain a little above it. */
+export function buildRoadGeometry(world: World): BufferGeometry | null {
+  const t = world.terrain;
+  const m = new Mesher();
+  const prosperity = world.params.prosperity / 100;
+  let any = false;
+
+  for (const road of world.roads) {
+    if (buildRibbon(m, t, road, prosperity)) any = true;
+  }
+  for (const plaza of world.plazas) {
+    buildPlaza(m, t, plaza, prosperity);
+    any = true;
+  }
+  if (!any) return null;
+  return m.toGeometry();
+}
+
+function buildRibbon(m: Mesher, t: TerrainData, road: RoadSegment, prosperity: number): boolean {
+  const pts = road.points;
+  if (pts.length < 2) return false;
+  const color = mix(PALETTE.roadDirt, PALETTE.roadCobble, prosperity);
+  const hw = road.width / 2;
+  const lift = 0.18;
+  const left: Vec2[] = [];
+  const right: Vec2[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[Math.max(0, i - 1)];
+    const next = pts[Math.min(pts.length - 1, i + 1)];
+    const dx = next.x - prev.x;
+    const dz = next.z - prev.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const nx = -dz / len;
+    const nz = dx / len;
+    left.push({ x: pts[i].x + nx * hw, z: pts[i].z + nz * hw });
+    right.push({ x: pts[i].x - nx * hw, z: pts[i].z - nz * hw });
+  }
+  for (let i = 0; i < pts.length - 1; i++) {
+    const l0 = left[i],
+      l1 = left[i + 1];
+    const r0 = right[i],
+      r1 = right[i + 1];
+    const yl0 = sampleHeight(t, l0.x, l0.z) + lift;
+    const yl1 = sampleHeight(t, l1.x, l1.z) + lift;
+    const yr0 = sampleHeight(t, r0.x, r0.z) + lift;
+    const yr1 = sampleHeight(t, r1.x, r1.z) + lift;
+    m.quad(l0.x, yl0, l0.z, r0.x, yr0, r0.z, r1.x, yr1, r1.z, l1.x, yl1, l1.z, color);
+  }
+  return true;
+}
+
+function buildPlaza(m: Mesher, t: TerrainData, plaza: Plaza, prosperity: number): void {
+  const color =
+    plaza.kind === 'civic' || plaza.kind === 'market'
+      ? mix(PALETTE.plaza, PALETTE.roadCobble, 0.3)
+      : mix(PALETTE.roadDirt, PALETTE.plaza, prosperity);
+  const segs = 14;
+  const cx = plaza.center.x;
+  const cz = plaza.center.z;
+  const cy = sampleHeight(t, cx, cz) + 0.16;
+  for (let s = 0; s < segs; s++) {
+    const a0 = (s / segs) * Math.PI * 2;
+    const a1 = ((s + 1) / segs) * Math.PI * 2;
+    const x0 = cx + Math.cos(a0) * plaza.radius;
+    const z0 = cz + Math.sin(a0) * plaza.radius;
+    const x1 = cx + Math.cos(a1) * plaza.radius;
+    const z1 = cz + Math.sin(a1) * plaza.radius;
+    const y0 = sampleHeight(t, x0, z0) + 0.16;
+    const y1 = sampleHeight(t, x1, z1) + 0.16;
+    m.triangle(cx, cy, cz, x0, y0, z0, x1, y1, z1, color);
+  }
+}
