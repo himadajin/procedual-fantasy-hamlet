@@ -381,10 +381,12 @@ body,
 }
 
 /* ---- Sliders ---- */
-.sliders {
+.parameter-section {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
 }
 .slider-head {
   display: flex;

@@ -76,7 +76,8 @@ export function ControlPanel(props: ControlPanelProps): JSX.Element {
 
           <Summary summary={props.summary} />
 
-          <div className="sliders">
+          <div className="parameter-section">
+            <div className="section-label">Parameters</div>
             {PARAM_META.map((meta) => (
               <Slider
                 key={meta.key}
