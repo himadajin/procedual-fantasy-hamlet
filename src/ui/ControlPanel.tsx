@@ -47,12 +47,15 @@ export function ControlPanel(props: ControlPanelProps): JSX.Element {
       </div>
 
       <div className="panel-body" id="panel-body" hidden={!open}>
-        <div className="summary-chips" aria-label="Current world summary">
-          {chips.map((chip) => (
-            <span className="summary-chip" key={chip}>
-              {chip}
-            </span>
-          ))}
+        <div className="world-status">
+          <div className="section-label">World</div>
+          <div className="summary-chips" aria-label="Current world summary">
+            {chips.map((chip) => (
+              <span className="summary-chip" key={chip}>
+                {chip}
+              </span>
+            ))}
+          </div>
         </div>
 
         <div className="panel-scroll">

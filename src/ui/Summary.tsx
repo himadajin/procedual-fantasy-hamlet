@@ -17,7 +17,7 @@ export function Summary({ summary }: { summary: WorldSummary }): JSX.Element {
   ];
   return (
     <details className="summary" aria-label="Generation summary" open>
-      <summary>Generation summary</summary>
+      <summary>Summary</summary>
       <dl>
         {rows.map(([k, v]) => (
           <div className="summary-row" key={k}>
