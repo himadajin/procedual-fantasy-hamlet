@@ -57,21 +57,22 @@ body,
 /* ---- Title ---- */
 .title-bar {
   position: absolute;
-  top: max(12px, env(safe-area-inset-top));
+  top: max(18px, calc(6px + env(safe-area-inset-top)));
   left: 16px;
+  max-width: calc(100vw - 188px);
   pointer-events: none;
   text-shadow: 0 2px 14px rgba(0, 0, 0, 0.6);
+  transition: opacity 0.15s ease;
 }
 .title-bar h1 {
+  overflow: hidden;
   margin: 0;
-  font-size: 20px;
-  letter-spacing: 0.04em;
+  font-size: 14px;
   font-weight: 650;
-}
-.title-bar p {
-  margin: 2px 0 0;
-  font-size: 12px;
-  color: var(--muted);
+  letter-spacing: 0;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Generating badge ---- */
@@ -201,21 +202,25 @@ body,
 
 /* Mobile / narrow: top dropdown from the same control point */
 @media (max-width: 759px) {
+  .app:has(.panel.open) .title-bar {
+    opacity: 0;
+  }
+
   .panel {
-    top: max(60px, calc(56px + env(safe-area-inset-top)));
+    top: max(16px, env(safe-area-inset-top));
     right: 12px;
     left: auto;
     bottom: auto;
     width: var(--controls-narrow-width);
     border-radius: var(--radius);
     padding: 8px 12px 14px;
-    max-height: min(76vh, calc(100vh - 72px - env(safe-area-inset-bottom)));
+    max-height: calc(100vh - 32px - env(safe-area-inset-bottom));
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
   }
   .panel.collapsed {
-    top: max(60px, calc(56px + env(safe-area-inset-top)));
+    top: max(16px, env(safe-area-inset-top));
     max-height: unset;
     left: auto;
     right: 12px;
@@ -232,6 +237,16 @@ body,
   }
   .panel-body {
     overflow-y: auto;
+  }
+}
+
+@media (max-width: 420px) {
+  .title-bar {
+    left: 12px;
+    max-width: calc(100vw - 174px);
+  }
+  .title-bar h1 {
+    font-size: 13px;
   }
 }
 

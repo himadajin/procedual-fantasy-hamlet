@@ -1,7 +1,7 @@
 /**
  * App shell. Holds the draft seed/params, the currently displayed World, and the
  * regeneration lifecycle. The 3D viewer is always the star: the control panel is
- * a non-modal side panel (desktop) / bottom sheet (mobile), and regenerating
+ * a non-modal side panel / top-right dropdown, and regenerating
  * never navigates away — the old diorama stays on screen under a light
  * "Generating…" badge until the new one is ready.
  */
@@ -80,7 +80,6 @@ export default function App(): JSX.Element {
 
       <header className="title-bar">
         <h1>Procedural Fantasy Hamlet</h1>
-        <p>A medieval fantasy diorama, grown from a seed</p>
       </header>
 
       <ControlPanel
