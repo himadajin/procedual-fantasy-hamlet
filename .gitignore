@@ -141,3 +141,16 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Build & test artifacts
+dist
+coverage
+playwright-report
+test-results
+
+# Local workspace directories
+.claude
+/works/
+/local/
+/tmp/
+/model/

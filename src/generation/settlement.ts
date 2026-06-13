@@ -1,0 +1,1113 @@
+/**
+ * Settlement phase — the monument, plazas and all buildings.
+ *
+ * Buildings are not scattered: candidates are spawned along the road skeleton
+ * (set back on each side, facing the street), around plazas (facing in) and
+ * along the shore (facing the water). Each candidate is accepted or rejected by
+ * a density that peaks at the center and fades outward, scaled by settlement
+ * pressure. Role falls out of context — proximity to walls, gates, water,
+ * bridges and the center — and drives footprint, massing, roof, material and
+ * detail. The single monument is placed first and dominates.
+ */
+import { ValueNoise2D } from './noise';
+import { Rng } from './rng';
+import { frac, type WorldParams } from './params';
+import {
+  distance,
+  heightStatsInRadius,
+  idx,
+  lerp,
+  sampleHeight,
+  slopeAt,
+  smoothstep,
+  worldToCellF,
+  clampInt,
+} from './grid';
+import { pointInPolygon } from './defenses';
+import { closestPointOnSegment, distanceToRoadGraphClearance, nearestRoadPoint } from './roads';
+import type {
+  Bridge,
+  Building,
+  BuildingRole,
+  BuildingTier,
+  Gate,
+  Plaza,
+  RoadGraph,
+  RoadSurface,
+  RoofKind,
+  TerrainData,
+  Vec2,
+  WallMaterial,
+  WaterData,
+} from './types';
+
+export interface SettlementResult {
+  buildings: Building[];
+  roadGraph: RoadGraph;
+}
+
+interface Placed {
+  pos: Vec2;
+  radius: number;
+}
+
+interface Candidate {
+  pos: Vec2;
+  face: number; // angle the front faces
+  source: 'road' | 'plaza' | 'water';
+  klass: 'main' | 'street' | 'lane' | 'ring';
+  anchor: Vec2;
+  approachWidth: number;
+  importance: number;
+  surface: RoadSurface;
+}
+
+interface Footprint {
+  w: number;
+  d: number;
+}
+
+/** Is there water within `radius` world units of `p`? */
+function nearWater(terrain: TerrainData, water: WaterData, p: Vec2, radius: number): boolean {
+  const { size } = terrain;
+  const f = worldToCellF(terrain, p.x, p.z);
+  const span = Math.ceil(radius / terrain.cellSize);
+  const ci = clampInt(Math.round(f.fi), 0, size - 1);
+  const cj = clampInt(Math.round(f.fj), 0, size - 1);
+  for (let dj = -span; dj <= span; dj++) {
+    for (let di = -span; di <= span; di++) {
+      const i = ci + di;
+      const j = cj + dj;
+      if (i < 0 || j < 0 || i >= size || j >= size) continue;
+      if (water.mask[idx(size, i, j)]) return true;
+    }
+  }
+  return false;
+}
+
+function inWater(terrain: TerrainData, water: WaterData, p: Vec2): boolean {
+  const f = worldToCellF(terrain, p.x, p.z);
+  const i = clampInt(Math.round(f.fi), 0, terrain.size - 1);
+  const j = clampInt(Math.round(f.fj), 0, terrain.size - 1);
+  return water.mask[idx(terrain.size, i, j)] === 1;
+}
+
+export function generateSettlement(
+  seedValue: number,
+  params: WorldParams,
+  terrain: TerrainData,
+  water: WaterData,
+  center: Vec2,
+  roadGraph: RoadGraph,
+  gates: Gate[],
+  enclosure: Vec2[],
+  enclosureRadius: number,
+): SettlementResult {
+  const rng = new Rng(seedValue).fork('settlement');
+  const settlement = frac(params.settlementPressure);
+  const prosperity = frac(params.prosperity);
+  const defense = frac(params.defensePressure);
+  const monumentality = frac(params.monumentality);
+  const waterPresence = frac(params.waterPresence);
+  const scale = frac(params.worldScale);
+  const weather = new ValueNoise2D(seedValue ^ 0x4d3f17a9);
+
+  const buildings: Building[] = [];
+  const placed: Placed[] = [];
+  const plazas: Plaza[] = [...roadGraph.plazas];
+  let workingGraph = roadGraph;
+  const bridges = workingGraph.bridges;
+  const settlementRadius = workingGraph.settlementRadius;
+
+  // --- 1. The monument ----------------------------------------------------
+  const firstApproach = workingGraph.edges.find((edge) => edge.kind === 'approach');
+  const firstRoadEnd = firstApproach
+    ? firstApproach.points[firstApproach.points.length - 1]
+    : center;
+  const approachDir = Math.atan2(firstRoadEnd.z - center.z, firstRoadEnd.x - center.x);
+  const monument = makeMonument(
+    rng,
+    center,
+    sampleHeight(terrain, center.x, center.z),
+    // Face down the main approach (front toward the incoming road).
+    Math.atan2(Math.cos(approachDir), Math.sin(approachDir)) + Math.PI,
+    params,
+  );
+  applyFoundationFit(terrain, monument, params);
+  buildings.push(monument);
+  placed.push({
+    pos: monument.position,
+    radius: buildingPlanRadius(monument),
+  });
+
+  // --- 2. Plazas (front, courtyard, gates, bridges, junctions) ------------
+  const plazaTidiness = prosperity;
+  // Civic plaza in front of the monument.
+  const frontDir = monument.rotation;
+  const monumentFront = buildingFrontExtent(monument);
+  const civicR = lerp(8, 18, monumentality) * (1 - settlement * 0.3);
+  const civic: Plaza = plazas.find((p) => p.kind === 'civic') ?? {
+    center: {
+      x: center.x + Math.sin(frontDir) * (monumentFront + civicR * 1.15),
+      z: center.z + Math.cos(frontDir) * (monumentFront + civicR * 1.15),
+    },
+    radius: civicR * (0.8 + plazaTidiness * 0.4),
+    kind: 'civic',
+  };
+  placed.push({ pos: civic.center, radius: civic.radius * 0.8 });
+  workingGraph = addBuildingAccessEdge(workingGraph, monument, 'plaza', 'stone', params);
+
+  // Courtyard inside the walls.
+  if (enclosureRadius > 18 && defense > 0.4) {
+    plazas.push({
+      center: { x: center.x, z: center.z },
+      radius: lerp(6, 12, prosperity),
+      kind: 'courtyard',
+    });
+  }
+
+  // Gate forecourts.
+  for (const g of gates) {
+    const inward = g.rotation;
+    plazas.push({
+      center: {
+        x: g.position.x + Math.cos(inward) * 6,
+        z: g.position.z + Math.sin(inward) * 6,
+      },
+      radius: lerp(4, 7, prosperity),
+      kind: 'gate',
+    });
+  }
+
+  // A market plaza at a busy junction (denser worlds get smaller squares).
+  if (settlement > 0.3 && workingGraph.edges.length > 3) {
+    const j = workingGraph.edges[rng.int(1, Math.min(3, workingGraph.edges.length - 1))].points;
+    const mp = j[Math.floor(j.length * 0.4)];
+    if (distance(mp, center) < settlementRadius) {
+      plazas.push({
+        center: mp,
+        radius: lerp(8, 4, settlement) * (0.7 + prosperity * 0.5),
+        kind: 'market',
+      });
+      placed.push({ pos: mp, radius: 4 });
+    }
+  }
+
+  // --- 3. Candidate generation -------------------------------------------
+  const candidates: Candidate[] = [];
+
+  // Along roads, set back on both sides.
+  for (const road of workingGraph.edges) {
+    if (road.kind === 'access') continue;
+    const klass = road.importance > 0.68 ? 'main' : road.importance > 0.42 ? 'street' : 'lane';
+    const stepLen = lerp(8.2, 4.4, settlement) * lerp(1.12, 0.78, road.importance);
+    let acc = 0;
+    for (let i = 0; i < road.points.length - 1; i++) {
+      const a = road.points[i];
+      const b = road.points[i + 1];
+      const segLen = distance(a, b);
+      let t = 0;
+      while (acc < segLen) {
+        t = acc / segLen;
+        const px = a.x + (b.x - a.x) * t;
+        const pz = a.z + (b.z - a.z) * t;
+        const dirx = b.x - a.x;
+        const dirz = b.z - a.z;
+        const len = Math.hypot(dirx, dirz) || 1;
+        const nx = -dirz / len;
+        const nz = dirx / len;
+        const setback = road.frontage;
+        for (const side of [1, -1]) {
+          const pos = { x: px + nx * setback * side, z: pz + nz * setback * side };
+          // Front faces back toward the road.
+          const face = Math.atan2(-nx * side, -nz * side);
+          candidates.push({
+            pos,
+            face,
+            source: 'road',
+            klass,
+            anchor: { x: px, z: pz },
+            approachWidth: road.clearance,
+            importance: road.importance,
+            surface: road.surface,
+          });
+        }
+        acc += stepLen;
+      }
+      acc -= segLen;
+    }
+  }
+
+  // Around plazas, facing in.
+  for (const plaza of plazas) {
+    if (plaza.kind === 'courtyard') continue;
+    const ring = plaza.radius + lerp(4, 3, settlement);
+    const count = Math.max(4, Math.round((Math.PI * 2 * ring) / lerp(9, 6, settlement)));
+    for (let c = 0; c < count; c++) {
+      const a = (c / count) * Math.PI * 2 + rng.jitter(0.1);
+      const pos = {
+        x: plaza.center.x + Math.cos(a) * ring,
+        z: plaza.center.z + Math.sin(a) * ring,
+      };
+      const face = Math.atan2(plaza.center.x - pos.x, plaza.center.z - pos.z);
+      candidates.push({
+        pos,
+        face,
+        source: 'plaza',
+        klass: 'street',
+        anchor: {
+          x: plaza.center.x - Math.sin(face) * plaza.radius * 0.86,
+          z: plaza.center.z - Math.cos(face) * plaza.radius * 0.86,
+        },
+        approachWidth: plaza.radius * 0.22,
+        importance: plaza.kind === 'civic' || plaza.kind === 'market' ? 0.72 : 0.48,
+        surface: prosperity > 0.55 ? 'cobble' : 'mixed',
+      });
+    }
+  }
+
+  // Along the shore, facing the water (only when water matters).
+  if (waterPresence > 0.4 && water.riverPath.length > 1) {
+    for (let i = 0; i < water.riverPath.length - 1; i += 2) {
+      const p = water.riverPath[i];
+      const np = water.riverPath[i + 1];
+      const dirx = np.x - p.x;
+      const dirz = np.z - p.z;
+      const len = Math.hypot(dirx, dirz) || 1;
+      const nx = -dirz / len;
+      const nz = dirx / len;
+      for (const side of [1, -1]) {
+        const off = lerp(7, 11, waterPresence);
+        const pos = { x: p.x + nx * off * side, z: p.z + nz * off * side };
+        if (distance(pos, center) > settlementRadius * 1.25) continue;
+        // Face toward the water.
+        const face = Math.atan2(-nx * side, -nz * side);
+        candidates.push({
+          pos,
+          face,
+          source: 'water',
+          klass: 'lane',
+          anchor: { x: p.x, z: p.z },
+          approachWidth: 2.2,
+          importance: 0.32 + waterPresence * 0.28,
+          surface: 'wood',
+        });
+      }
+    }
+  }
+
+  // Deterministic shuffle so acceptance isn't biased by road order.
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = rng.int(0, i);
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  // --- 4. Acceptance + role assignment + construction --------------------
+  const maxBuildings = Math.round(lerp(55, 260, settlement * 0.7 + scale * 0.5));
+  let nextId = 1;
+
+  for (const cand of candidates) {
+    if (buildings.length >= maxBuildings) break;
+    const seedPos = cand.pos;
+    const r = distance(seedPos, center) / settlementRadius;
+
+    // Density falls off beyond the settlement radius.
+    const inCore = pointInPolygon(seedPos, enclosure);
+    const falloff = 1 - smoothstep(0.6, 1.4, r);
+    const sourceBoost =
+      cand.source === 'plaza' ? 1.3 : cand.source === 'water' ? 1.15 : 1 + cand.importance * 0.22;
+    let prob = (0.45 + settlement * 0.6) * falloff * sourceBoost;
+    if (inCore) prob += 0.22;
+    if (r > 1.4) prob *= 0.35; // a few outliers beyond the edge
+    if (!rng.chance(prob)) continue;
+
+    // Role falls out of context near the road/plaza/water target; once the
+    // footprint is known, move the building center back so the front wall and
+    // entrance answer the target without swallowing the street.
+    const roughWaterside =
+      cand.source === 'water' || (nearWater(terrain, water, seedPos, 6) && waterPresence > 0.45);
+    const role = decideRole(cand, r, inCore, roughWaterside, bridges, gates, rng, params);
+    const footprint = roleFootprint(role, rng, params);
+    const finalPos = settledCandidatePosition(cand, role, footprint, settlement);
+    if (!insideTerrain(terrain, finalPos, Math.max(footprint.w, footprint.d) * 0.7)) continue;
+
+    // Reject water tiles unless this will be a waterside building.
+    const onWater = inWater(terrain, water, finalPos);
+    const isWaterside =
+      cand.source === 'water' || (nearWater(terrain, water, finalPos, 6) && waterPresence > 0.45);
+    if (onWater && !isWaterside) continue;
+
+    // Reject steep ground after the final footprint-aware shift.
+    const slope = slopeAt(terrain, finalPos.x, finalPos.z);
+    if (slope > lerp(0.9, 0.55, frac(params.terrainRuggedness))) continue;
+
+    const terrainFit = isWaterside
+      ? undefined
+      : buildingTerrainFit(terrain, finalPos, footprintRadius(role, footprint), role, params);
+    if (!isWaterside && !terrainFit) continue;
+    const reserveRadius = footprintRadius(role, footprint) * 0.95;
+    if (distanceToRoadGraphClearance(workingGraph, finalPos) < reserveRadius) continue;
+
+    const ground = isWaterside ? water.level : terrainFit!.ground;
+    const refineNoise = weather.fbm(finalPos.x * 0.05 + 5, finalPos.z * 0.05 - 2, 3);
+    const building = makeBuilding(
+      rng,
+      nextId,
+      role,
+      finalPos,
+      ground,
+      cand.face + rng.jitter(0.12),
+      params,
+      footprint,
+      refineNoise,
+      isWaterside ? water.level : 0,
+    );
+    if (terrainFit) building.foundationDepth = terrainFit.foundationDepth;
+    else if (building.stiltHeight <= 0) applyFoundationFit(terrain, building, params);
+    const terraceRadius = buildingPlanRadius(building);
+    const radius = terraceRadius * 0.86;
+    let clash = false;
+    const clashMargin = lerp(1.8, 0.5, settlement);
+    for (const pl of placed) {
+      if (distance(pl.pos, finalPos) < pl.radius + radius + clashMargin) {
+        clash = true;
+        break;
+      }
+    }
+    if (clash) continue;
+
+    buildings.push(building);
+    workingGraph = addBuildingAccessEdge(
+      workingGraph,
+      building,
+      cand.source,
+      accessSurface(building, cand, params),
+      params,
+    );
+    placed.push({ pos: finalPos, radius });
+    nextId += 1;
+  }
+
+  workingGraph = {
+    ...workingGraph,
+    plazas,
+    clearances: [
+      ...workingGraph.clearances.filter((c) => c.kind !== 'plaza'),
+      ...plazas.map((plaza) => ({
+        kind: 'plaza' as const,
+        points: [plaza.center],
+        radius: plaza.radius + 1.2,
+      })),
+    ],
+  };
+
+  return { buildings, roadGraph: workingGraph };
+}
+
+// --------------------------------------------------------------------------
+// Role decision
+// --------------------------------------------------------------------------
+function decideRole(
+  cand: Candidate,
+  rNorm: number,
+  inCore: boolean,
+  isWaterside: boolean,
+  bridges: Bridge[],
+  gates: Gate[],
+  rng: Rng,
+  params: WorldParams,
+): BuildingRole {
+  const defense = frac(params.defensePressure);
+  const prosperity = frac(params.prosperity);
+
+  // Near a bridge head?
+  for (const b of bridges) {
+    if (distance(cand.pos, b.a) < 7 || distance(cand.pos, b.b) < 7) {
+      if (rng.chance(0.6)) return 'bridgehouse';
+    }
+  }
+  // Near a gate?
+  for (const g of gates) {
+    if (distance(cand.pos, g.position) < 12 && rng.chance(0.6)) return 'gatehouse';
+  }
+  if (isWaterside) return rng.chance(0.85) ? 'waterside' : 'tower';
+
+  if (inCore) {
+    // The guarded core: halls, occasional towers, prominent dwellings.
+    if (rng.chance(0.12 + defense * 0.18)) return 'tower';
+    if (rng.chance(0.18 + prosperity * 0.22)) return 'hall';
+    return 'dwelling';
+  }
+
+  if (rNorm > 1.25) return rng.chance(0.5) ? 'outlier' : 'workshop';
+  if (cand.source === 'road' && cand.klass === 'lane' && rng.chance(0.3)) return 'workshop';
+  if (rng.chance(0.06 + defense * 0.1)) return 'tower';
+  return 'dwelling';
+}
+
+// --------------------------------------------------------------------------
+// Footprint sizing per role
+// --------------------------------------------------------------------------
+function roleFootprint(role: BuildingRole, rng: Rng, params: WorldParams): Footprint {
+  const prosperity = frac(params.prosperity);
+  switch (role) {
+    case 'monument':
+      return {
+        w: lerp(16, 30, frac(params.monumentality)),
+        d: lerp(20, 40, frac(params.monumentality)),
+      };
+    case 'hall':
+      return { w: rng.range(8, 12), d: rng.range(12, 20) };
+    case 'tower':
+      return { w: rng.range(4.5, 6.5), d: rng.range(4.5, 6.5) };
+    case 'gatehouse':
+      return { w: rng.range(6, 9), d: rng.range(6, 9) };
+    case 'wallhouse':
+      return { w: rng.range(5, 8), d: rng.range(6, 10) };
+    case 'waterside':
+      return { w: rng.range(5, 8), d: rng.range(6, 11) };
+    case 'bridgehouse':
+      return { w: rng.range(4.5, 7), d: rng.range(5, 9) };
+    case 'workshop':
+      return { w: rng.range(5, 8), d: rng.range(6, 10) };
+    case 'outlier':
+      return { w: rng.range(4, 6), d: rng.range(5, 8) };
+    case 'dwelling':
+    default:
+      return { w: rng.range(4.5, 7.5) * (0.9 + prosperity * 0.3), d: rng.range(5.5, 10) };
+  }
+}
+
+function buildingPlanRadius(b: Building): number {
+  let radius = 0;
+  for (const tier of b.tiers) {
+    const offset = Math.hypot(tier.offsetX, tier.offsetZ);
+    radius = Math.max(radius, offset + Math.max(tier.width, tier.depth) * 0.62);
+  }
+  return radius;
+}
+
+function footprintRadius(role: BuildingRole, fp: Footprint): number {
+  const base = Math.max(fp.w, fp.d);
+  if (role === 'monument') return base * 0.72;
+  if (role === 'hall' || role === 'waterside' || role === 'bridgehouse') return base * 0.64;
+  return base * 0.56;
+}
+
+function maxFootprintRelief(role: BuildingRole, radius: number, params: WorldParams): number {
+  const rugged = frac(params.terrainRuggedness);
+  const sizePenalty = Math.max(0, radius - 5) * 0.18;
+  const base = role === 'monument' ? 4.8 : role === 'tower' ? 4.2 : 3.6;
+  return Math.max(1.4, base + rugged * 4.2 - sizePenalty);
+}
+
+function buildingTerrainFit(
+  terrain: TerrainData,
+  pos: Vec2,
+  radius: number,
+  role: BuildingRole,
+  params: WorldParams,
+): { ground: number; foundationDepth: number } | undefined {
+  const stats = heightStatsInRadius(terrain, pos, radius);
+  const maxRelief = maxFootprintRelief(role, radius, params);
+  if (stats.range > maxRelief) return undefined;
+  return {
+    ground: stats.max + 0.08,
+    foundationDepth: Math.max(1.2, stats.range + 0.75),
+  };
+}
+
+function applyFoundationFit(terrain: TerrainData, building: Building, params: WorldParams): void {
+  const radius = buildingPlanRadius(building) * 0.9;
+  const fit = buildingTerrainFit(terrain, building.position, radius, building.role, params);
+  const stats = heightStatsInRadius(terrain, building.position, radius);
+  building.ground = fit?.ground ?? stats.max + 0.08;
+  building.foundationDepth = fit?.foundationDepth ?? Math.max(1.4, stats.range + 0.85);
+}
+
+function insideTerrain(terrain: TerrainData, p: Vec2, margin: number): boolean {
+  const limit = terrain.half - margin;
+  return Math.abs(p.x) < limit && Math.abs(p.z) < limit;
+}
+
+function estimatedFrontExtent(role: BuildingRole, fp: Footprint): number {
+  if (role === 'monument') return fp.d * 0.62;
+  if (role === 'hall' || role === 'waterside' || role === 'bridgehouse') return fp.d * 0.68;
+  if (role === 'dwelling') return fp.d * 0.64;
+  return fp.d * 0.58;
+}
+
+function settledCandidatePosition(
+  cand: Candidate,
+  role: BuildingRole,
+  fp: Footprint,
+  settlement: number,
+): Vec2 {
+  const front = estimatedFrontExtent(role, fp);
+  const streetGap =
+    cand.source === 'road'
+      ? cand.approachWidth + lerp(0.95, 0.45, settlement)
+      : cand.source === 'plaza'
+        ? cand.approachWidth + lerp(0.7, 0.35, settlement)
+        : 1.1;
+  const fx = Math.sin(cand.face);
+  const fz = Math.cos(cand.face);
+  return {
+    x: cand.anchor.x - fx * (front + streetGap),
+    z: cand.anchor.z - fz * (front + streetGap),
+  };
+}
+
+function localPoint(b: Building, lx: number, lz: number): Vec2 {
+  const cos = Math.cos(b.rotation);
+  const sin = Math.sin(b.rotation);
+  return {
+    x: b.position.x + lx * cos + lz * sin,
+    z: b.position.z - lx * sin + lz * cos,
+  };
+}
+
+function buildingFrontExtent(b: Building): number {
+  let front = 0;
+  for (const tier of b.tiers) {
+    front = Math.max(front, tier.offsetZ + tier.depth / 2);
+  }
+  return front;
+}
+
+function accessWidth(b: Building, source: Candidate['source'], params: WorldParams): number {
+  const prosperity = frac(params.prosperity);
+  if (b.role === 'monument') return lerp(2.6, 3.8, prosperity);
+  if (b.role === 'hall' || b.role === 'gatehouse') return lerp(1.7, 2.4, prosperity);
+  if (source === 'plaza') return lerp(1.25, 1.9, prosperity);
+  if (source === 'water') return lerp(1.1, 1.6, prosperity);
+  if (b.role === 'outlier') return 0.85;
+  return lerp(0.95, 1.45, prosperity);
+}
+
+function accessSurface(b: Building, cand: Candidate, params: WorldParams): RoadSurface {
+  const prosperity = frac(params.prosperity);
+  if (cand.source === 'water' || b.role === 'waterside' || b.role === 'bridgehouse') return 'wood';
+  if (b.role === 'monument' || b.role === 'gatehouse')
+    return prosperity > 0.45 ? 'stone' : 'cobble';
+  if (prosperity > 0.72) return 'stone';
+  if (prosperity > 0.38 || cand.source === 'plaza' || cand.importance > 0.45) return 'cobble';
+  return cand.surface === 'mixed' ? 'mixed' : 'dirt';
+}
+
+function addBuildingAccessEdge(
+  graph: RoadGraph,
+  building: Building,
+  source: Candidate['source'],
+  surface: RoadSurface,
+  params: WorldParams,
+): RoadGraph {
+  const front = buildingFrontExtent(building);
+  const start = localPoint(building, 0, front + 0.32);
+  const nearest = nearestForwardRoadPoint(graph, building, start);
+  let end = nearest.point;
+  let dx = end.x - start.x;
+  let dz = end.z - start.z;
+  let len = Math.hypot(dx, dz);
+  const fx = Math.sin(building.rotation);
+  const fz = Math.cos(building.rotation);
+  const forward = dx * fx + dz * fz;
+  if (forward < 0.35) {
+    end = { x: start.x + fx * 0.8, z: start.z + fz * 0.8 };
+    dx = end.x - start.x;
+    dz = end.z - start.z;
+    len = Math.hypot(dx, dz);
+  }
+  if (len < 0.8) {
+    end = { x: start.x + fx * 0.8, z: start.z + fz * 0.8 };
+  }
+  const width = accessWidth(building, source, params);
+  const nodeBase = `entry-${building.id}`;
+  const edge = {
+    id: `access-${building.id}`,
+    from: `${nodeBase}-threshold`,
+    to: `${nodeBase}-network`,
+    points: [start, end],
+    kind: 'access' as const,
+    width,
+    importance: building.role === 'monument' ? 0.72 : 0.16,
+    clearance: width * 0.5 + 0.35,
+    frontage: 0,
+    surface,
+    waterCrossing: null,
+    buildingId: building.id,
+  };
+  return {
+    ...graph,
+    edges: [...graph.edges, edge],
+    nodes: [
+      ...graph.nodes,
+      {
+        id: edge.from,
+        kind: 'entryCluster',
+        position: start,
+        importance: edge.importance,
+      },
+      {
+        id: edge.to,
+        kind: 'junction',
+        position: end,
+        importance: nearest.edge.importance,
+      },
+    ],
+  };
+}
+
+function nearestForwardRoadPoint(
+  graph: RoadGraph,
+  building: Building,
+  start: Vec2,
+): ReturnType<typeof nearestRoadPoint> {
+  const fallback = nearestRoadPoint(graph, start);
+  const fx = Math.sin(building.rotation);
+  const fz = Math.cos(building.rotation);
+  let best: ReturnType<typeof nearestRoadPoint> | undefined;
+  for (const edge of graph.edges) {
+    if (edge.kind === 'access') continue;
+    for (let i = 0; i < edge.points.length - 1; i++) {
+      const p = closestPointOnSegment(start, edge.points[i], edge.points[i + 1]);
+      const forward = (p.x - start.x) * fx + (p.z - start.z) * fz;
+      if (forward < 0.15) continue;
+      const d = distance(start, p);
+      if (!best || d < best.distance) best = { point: p, edge, distance: d };
+    }
+  }
+  return best ?? fallback;
+}
+
+// --------------------------------------------------------------------------
+// The monument
+// --------------------------------------------------------------------------
+function makeMonument(
+  rng: Rng,
+  pos: Vec2,
+  ground: number,
+  rotation: number,
+  params: WorldParams,
+): Building {
+  const monumentality = frac(params.monumentality);
+  const defense = frac(params.defensePressure);
+  const prosperity = frac(params.prosperity);
+  const water = frac(params.waterPresence);
+
+  const fp = roleFootprint('monument', rng, params);
+
+  // Character: fortress (high defense), cathedral/palace (high prosperity, low
+  // defense), waterside hall (water), or grand hall otherwise. All one rule.
+  const fortressScore = defense * 1.2 + monumentality * 0.4;
+  const sacralScore = prosperity * 1.1 + monumentality * 0.5 - defense * 0.6;
+  const waterScore = water * 0.9 - defense * 0.3;
+
+  let roof: RoofKind;
+  let turrets: number;
+  let storeys: number;
+  let wallMaterial: WallMaterial;
+  let height: number;
+  if (fortressScore >= sacralScore && fortressScore >= waterScore) {
+    // Citadel / keep.
+    roof = rng.chance(0.5) ? 'pyramid' : 'hip';
+    turrets = rng.int(2, 4);
+    storeys = Math.round(lerp(3, 5, monumentality));
+    wallMaterial = 'stone';
+    height = lerp(16, 30, monumentality);
+  } else if (sacralScore >= waterScore) {
+    // Cathedral / palace.
+    roof = rng.chance(0.6) ? 'spire' : 'gable';
+    turrets = rng.chance(0.6) ? 2 : 0;
+    storeys = Math.round(lerp(3, 4, monumentality));
+    wallMaterial = prosperity > 0.6 ? 'stone' : 'plaster';
+    height = lerp(18, 32, monumentality);
+  } else {
+    // Waterside great hall.
+    roof = 'gable';
+    turrets = rng.chance(0.5) ? 1 : 0;
+    storeys = 3;
+    wallMaterial = prosperity > 0.5 ? 'stone' : 'halfTimber';
+    height = lerp(14, 24, monumentality);
+  }
+
+  const broadBase = {
+    width: fp.w * 0.72,
+    depth: fp.d * 0.78,
+    height: height * 0.86,
+    baseOffset: 0,
+    offsetX: 0,
+    offsetZ: 0,
+    roof,
+    roofYaw: 0,
+  };
+  const highCore = {
+    width: fp.w * 0.44,
+    depth: fp.d * 0.48,
+    height: height * lerp(1.18, 1.5, monumentality),
+    baseOffset: 0,
+    offsetX: 0,
+    offsetZ: -fp.d * 0.06,
+    roof,
+    roofYaw: 0,
+  };
+  const frontPorch = {
+    width: fp.w * lerp(0.32, 0.42, prosperity),
+    depth: fp.d * 0.22,
+    height: height * lerp(0.42, 0.58, defense),
+    baseOffset: 0,
+    offsetX: 0,
+    offsetZ: fp.d * 0.48,
+    roof: 'gable' as RoofKind,
+    roofYaw: roofYawForFootprint(fp.w, fp.d * 0.22),
+  };
+  const sideSign = rng.chance(0.5) ? 1 : -1;
+  const sideWing = {
+    width: fp.w * lerp(0.34, 0.46, prosperity),
+    depth: fp.d * lerp(0.36, 0.52, monumentality),
+    height: height * lerp(0.52, 0.7, prosperity),
+    baseOffset: 0,
+    offsetX: sideSign * fp.w * 0.5,
+    offsetZ: rng.jitter(fp.d * 0.12),
+    roof: rng.chance(0.55) ? ('hip' as RoofKind) : ('gable' as RoofKind),
+    roofYaw: Math.PI / 2,
+  };
+  const counterWing = {
+    width: fp.w * lerp(0.24, 0.34, monumentality),
+    depth: fp.d * lerp(0.28, 0.4, water),
+    height: height * lerp(0.42, 0.58, prosperity),
+    baseOffset: 0,
+    offsetX: -sideSign * fp.w * 0.46,
+    offsetZ: fp.d * lerp(-0.2, 0.18, water),
+    roof: 'gable' as RoofKind,
+    roofYaw: Math.PI / 2,
+  };
+  const tiers = [broadBase, highCore, frontPorch, sideWing, counterWing];
+
+  return {
+    id: 0,
+    role: 'monument',
+    position: pos,
+    ground,
+    rotation,
+    tiers,
+    roof,
+    roofHeight: height * lerp(0.5, 0.9, monumentality),
+    overhang: 0.8,
+    wallMaterial,
+    refinement: Math.min(1, prosperity * 0.7 + monumentality * 0.4),
+    turrets,
+    hasChimney: false,
+    stiltHeight: 0,
+    foundationDepth: 1.6,
+    storeys,
+  };
+}
+
+// --------------------------------------------------------------------------
+// Generic building construction
+// --------------------------------------------------------------------------
+function makeBuilding(
+  rng: Rng,
+  id: number,
+  role: BuildingRole,
+  pos: Vec2,
+  ground: number,
+  rotation: number,
+  params: WorldParams,
+  fp: Footprint,
+  refineNoise: number,
+  waterLevel: number,
+): Building {
+  const prosperity = frac(params.prosperity);
+  const defense = frac(params.defensePressure);
+  const refinement = clamp01(prosperity * 0.75 + refineNoise * 0.4 - 0.1);
+
+  // Material trends with prosperity and role.
+  let wallMaterial: WallMaterial;
+  if (role === 'tower' || role === 'gatehouse' || role === 'wallhouse') {
+    wallMaterial = 'stone';
+  } else if (role === 'waterside' || role === 'bridgehouse') {
+    wallMaterial = rng.chance(0.6) ? 'timber' : 'halfTimber';
+  } else if (prosperity > 0.7) {
+    wallMaterial = rng.chance(0.6) ? 'stone' : 'halfTimber';
+  } else if (prosperity > 0.4) {
+    wallMaterial = rng.chance(0.5) ? 'halfTimber' : 'plaster';
+  } else {
+    wallMaterial = rng.chance(0.5) ? 'timber' : 'plaster';
+  }
+
+  // Storeys & height.
+  let storeys: number;
+  const storeyHeight = lerp(2.6, 3.4, prosperity);
+  if (role === 'tower') storeys = rng.int(3, 5);
+  else if (role === 'hall') storeys = rng.int(2, 3);
+  else if (role === 'gatehouse') storeys = rng.int(2, 3);
+  else storeys = rng.int(1, prosperity > 0.5 ? 3 : 2);
+  if (role === 'outlier') storeys = 1;
+  const bodyHeight = storeys * storeyHeight;
+
+  // Roof selection.
+  let roof: RoofKind;
+  if (role === 'tower') roof = rng.chance(0.6) ? 'pyramid' : 'spire';
+  else if (role === 'workshop' || role === 'outlier') roof = rng.chance(0.4) ? 'shed' : 'gable';
+  else if (prosperity > 0.55) roof = rng.chance(0.7) ? 'gable' : 'hip';
+  else roof = 'gable';
+  const steepness = lerp(0.7, 1.35, prosperity) * (role === 'tower' ? 1.4 : 1);
+  const roofHeight =
+    role === 'tower' ? fp.w * 0.9 * steepness : Math.min(fp.w, fp.d) * 0.55 * steepness;
+
+  const tiers = makeGenericTiers(rng, role, fp, bodyHeight, storeys, params, refinement);
+  if (tiers.length > 1 && roof === 'shed') roof = 'gable';
+
+  const turrets =
+    role === 'tower' ? 0 : role === 'hall' && defense > 0.5 && rng.chance(0.5) ? 2 : 0;
+  const hasChimney = role !== 'tower' && role !== 'outlier' && rng.chance(0.4 + prosperity * 0.4);
+  const stiltHeight = waterLevel > 0 ? Math.max(1.5, waterLevel - ground + 1.5) : 0;
+
+  return {
+    id,
+    role,
+    position: pos,
+    ground: waterLevel > 0 ? waterLevel : ground,
+    rotation,
+    tiers,
+    roof,
+    roofHeight,
+    overhang: lerp(0.25, 0.7, prosperity),
+    wallMaterial,
+    refinement,
+    turrets,
+    hasChimney,
+    stiltHeight,
+    foundationDepth: stiltHeight > 0 ? 0.6 : 1.6,
+    storeys,
+  };
+}
+
+function makeGenericTiers(
+  rng: Rng,
+  role: BuildingRole,
+  fp: Footprint,
+  bodyHeight: number,
+  storeys: number,
+  params: WorldParams,
+  refinement: number,
+): BuildingTier[] {
+  const settlement = frac(params.settlementPressure);
+  const prosperity = frac(params.prosperity);
+  const defense = frac(params.defensePressure);
+  const water = frac(params.waterPresence);
+
+  const tiers: BuildingTier[] = [
+    {
+      width: fp.w,
+      depth: fp.d,
+      height: bodyHeight,
+      baseOffset: 0,
+      offsetX: 0,
+      offsetZ: 0,
+      roofYaw: roofYawForFootprint(fp.w, fp.d),
+    },
+  ];
+
+  if (role === 'tower') return tiers;
+
+  const addAttached = (
+    width: number,
+    depth: number,
+    height: number,
+    offsetX: number,
+    offsetZ: number,
+    roof: RoofKind,
+    roofYaw = roofYawForFootprint(width, depth),
+  ): void => {
+    tiers.push({
+      width,
+      depth,
+      height,
+      baseOffset: 0,
+      offsetX,
+      offsetZ,
+      roof,
+      roofYaw,
+    });
+  };
+
+  const sideSign = rng.chance(0.5) ? 1 : -1;
+  const complexity = clamp01(
+    0.12 + settlement * 0.28 + prosperity * 0.35 + refinement * 0.25 + defense * 0.08,
+  );
+  const frontOverlap = fp.d * rng.range(0.12, 0.22);
+  const sideOverlap = fp.w * rng.range(0.1, 0.2);
+
+  if (role === 'hall') {
+    const crossW = fp.w * rng.range(0.56, 0.78);
+    const crossD = fp.d * rng.range(0.38, 0.56);
+    addAttached(
+      crossW,
+      crossD,
+      bodyHeight * rng.range(0.62, 0.82),
+      sideSign * (fp.w / 2 + crossW / 2 - sideOverlap),
+      rng.jitter(fp.d * 0.12),
+      rng.chance(0.55) ? 'gable' : 'hip',
+      Math.PI / 2,
+    );
+
+    const porchD = fp.d * rng.range(0.18, 0.28);
+    addAttached(
+      fp.w * rng.range(0.38, 0.58),
+      porchD,
+      bodyHeight * rng.range(0.42, 0.58),
+      0,
+      fp.d / 2 + porchD / 2 - frontOverlap,
+      'gable',
+    );
+
+    if (prosperity > 0.45 && rng.chance(0.45 + complexity * 0.35)) {
+      const serviceD = fp.d * rng.range(0.22, 0.34);
+      addAttached(
+        fp.w * rng.range(0.36, 0.52),
+        serviceD,
+        bodyHeight * rng.range(0.48, 0.64),
+        -sideSign * fp.w * rng.range(0.08, 0.22),
+        -fp.d / 2 - serviceD / 2 + frontOverlap,
+        rng.chance(0.7) ? 'gable' : 'shed',
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'gatehouse' || role === 'wallhouse') {
+    const shoulderW = fp.w * rng.range(0.3, 0.42);
+    const shoulderD = fp.d * rng.range(0.45, 0.68);
+    const shoulderH = bodyHeight * rng.range(0.62, 0.9);
+    addAttached(
+      shoulderW,
+      shoulderD,
+      shoulderH,
+      fp.w / 2 + shoulderW / 2 - sideOverlap,
+      rng.jitter(fp.d * 0.08),
+      defense > 0.55 ? 'pyramid' : 'hip',
+    );
+    if (defense > 0.45 || rng.chance(complexity)) {
+      addAttached(
+        shoulderW * rng.range(0.85, 1.1),
+        shoulderD * rng.range(0.82, 1.05),
+        shoulderH * rng.range(0.88, 1.1),
+        -fp.w / 2 - shoulderW / 2 + sideOverlap,
+        rng.jitter(fp.d * 0.08),
+        defense > 0.55 ? 'pyramid' : 'hip',
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'waterside' || role === 'bridgehouse') {
+    const galleryD = fp.d * rng.range(0.24, 0.38);
+    addAttached(
+      fp.w * rng.range(0.58, 0.9),
+      galleryD,
+      bodyHeight * rng.range(0.42, 0.62),
+      rng.jitter(fp.w * 0.1),
+      fp.d / 2 + galleryD / 2 - frontOverlap,
+      rng.chance(0.6) ? 'shed' : 'gable',
+    );
+    if (water > 0.55 && rng.chance(0.35 + complexity * 0.45)) {
+      const sideW = fp.w * rng.range(0.34, 0.5);
+      const sideD = fp.d * rng.range(0.42, 0.62);
+      addAttached(
+        sideW,
+        sideD,
+        bodyHeight * rng.range(0.46, 0.66),
+        sideSign * (fp.w / 2 + sideW / 2 - sideOverlap),
+        -fp.d * rng.range(0.05, 0.18),
+        'gable',
+        Math.PI / 2,
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'workshop') {
+    if (rng.chance(0.65 + complexity * 0.25)) {
+      const shedW = fp.w * rng.range(0.48, 0.74);
+      const shedD = fp.d * rng.range(0.32, 0.5);
+      addAttached(
+        shedW,
+        shedD,
+        bodyHeight * rng.range(0.36, 0.58),
+        sideSign * fp.w * rng.range(0.08, 0.24),
+        -fp.d / 2 - shedD / 2 + frontOverlap,
+        'shed',
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'outlier') {
+    if (storeys === 1 && rng.chance(0.3 + prosperity * 0.2)) {
+      const leanW = fp.w * rng.range(0.34, 0.52);
+      const leanD = fp.d * rng.range(0.28, 0.42);
+      addAttached(
+        leanW,
+        leanD,
+        bodyHeight * rng.range(0.34, 0.5),
+        sideSign * (fp.w / 2 + leanW / 2 - sideOverlap),
+        -fp.d * rng.range(0.05, 0.2),
+        'shed',
+      );
+    }
+    return tiers;
+  }
+
+  // Dwellings: a readable house plan emerges from one side wing, an occasional
+  // front bay, and a small rear service room in denser or wealthier streets.
+  if (rng.chance(0.42 + complexity * 0.42)) {
+    const wingW = fp.w * rng.range(0.36, 0.58);
+    const wingD = fp.d * rng.range(0.4, 0.72);
+    addAttached(
+      wingW,
+      wingD,
+      bodyHeight * rng.range(0.52, 0.82),
+      sideSign * (fp.w / 2 + wingW / 2 - sideOverlap),
+      rng.jitter(fp.d * 0.16),
+      'gable',
+      Math.PI / 2,
+    );
+  }
+
+  if (rng.chance(0.22 + prosperity * 0.32 + settlement * 0.12)) {
+    const bayD = fp.d * rng.range(0.16, 0.28);
+    addAttached(
+      fp.w * rng.range(0.34, 0.54),
+      bayD,
+      bodyHeight * rng.range(0.38, 0.56),
+      rng.jitter(fp.w * 0.12),
+      fp.d / 2 + bayD / 2 - frontOverlap,
+      'gable',
+    );
+  }
+
+  if (tiers.length < 3 && rng.chance(0.18 + settlement * 0.22)) {
+    const serviceD = fp.d * rng.range(0.18, 0.3);
+    addAttached(
+      fp.w * rng.range(0.32, 0.5),
+      serviceD,
+      bodyHeight * rng.range(0.36, 0.52),
+      -sideSign * fp.w * rng.range(0.08, 0.24),
+      -fp.d / 2 - serviceD / 2 + frontOverlap,
+      rng.chance(0.65) ? 'shed' : 'gable',
+    );
+  }
+
+  return tiers;
+}
+
+function roofYawForFootprint(width: number, depth: number): number {
+  return width > depth * 1.15 ? Math.PI / 2 : 0;
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
