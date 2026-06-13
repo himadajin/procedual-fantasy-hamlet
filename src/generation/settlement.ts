@@ -139,19 +139,14 @@ export function generateSettlement(
     Math.atan2(Math.cos(approachDir), Math.sin(approachDir)) + Math.PI,
     params,
   );
-  terrace(
-    terrain,
-    monument.position,
-    Math.max(monument.tiers[0].width, monument.tiers[0].depth) * 0.8,
-    monument.ground,
-  );
+  terrace(terrain, monument.position, buildingPlanRadius(monument) * 1.12, monument.ground);
   buildings.push(monument);
   placed.push({
     pos: monument.position,
-    radius: Math.max(monument.tiers[0].width, monument.tiers[0].depth) * 0.7,
+    radius: buildingPlanRadius(monument),
   });
 
-  const monumentRadius = Math.max(monument.tiers[0].width, monument.tiers[0].depth);
+  const monumentRadius = buildingPlanRadius(monument);
 
   // --- 2. Plazas (front, courtyard, gates, bridges, junctions) ------------
   const plazaTidiness = prosperity;
@@ -432,6 +427,15 @@ function roleFootprint(
   }
 }
 
+function buildingPlanRadius(b: Building): number {
+  let radius = 0;
+  for (const tier of b.tiers) {
+    const offset = Math.hypot(tier.offsetX, tier.offsetZ);
+    radius = Math.max(radius, offset + Math.max(tier.width, tier.depth) * 0.62);
+  }
+  return radius;
+}
+
 // --------------------------------------------------------------------------
 // The monument
 // --------------------------------------------------------------------------
@@ -483,18 +487,48 @@ function makeMonument(
     height = lerp(14, 24, monumentality);
   }
 
-  const tiers = [
-    { width: fp.w, depth: fp.d, height, baseOffset: 0, offsetX: 0, offsetZ: 0 },
-    // A raised central mass / nave / great hall block.
-    {
-      width: fp.w * 0.55,
-      depth: fp.d * 0.6,
-      height: height * lerp(1.15, 1.5, monumentality),
-      baseOffset: 0,
-      offsetX: 0,
-      offsetZ: -fp.d * 0.05,
-    },
-  ];
+  const broadBase = {
+    width: fp.w * 0.72,
+    depth: fp.d * 0.78,
+    height: height * 0.86,
+    baseOffset: 0,
+    offsetX: 0,
+    offsetZ: 0,
+  };
+  const highCore = {
+    width: fp.w * 0.44,
+    depth: fp.d * 0.48,
+    height: height * lerp(1.18, 1.5, monumentality),
+    baseOffset: 0,
+    offsetX: 0,
+    offsetZ: -fp.d * 0.06,
+  };
+  const frontPorch = {
+    width: fp.w * lerp(0.32, 0.42, prosperity),
+    depth: fp.d * 0.22,
+    height: height * lerp(0.42, 0.58, defense),
+    baseOffset: 0,
+    offsetX: 0,
+    offsetZ: fp.d * 0.48,
+  };
+  const sideSign = rng.chance(0.5) ? 1 : -1;
+  const sideWing = {
+    width: fp.w * lerp(0.34, 0.46, prosperity),
+    depth: fp.d * lerp(0.36, 0.52, monumentality),
+    height: height * lerp(0.52, 0.7, prosperity),
+    baseOffset: 0,
+    offsetX: sideSign * fp.w * 0.5,
+    offsetZ: rng.jitter(fp.d * 0.12),
+  };
+  const counterWing = {
+    width: fp.w * lerp(0.24, 0.34, monumentality),
+    depth: fp.d * lerp(0.28, 0.4, water),
+    height: height * lerp(0.42, 0.58, prosperity),
+    baseOffset: 0,
+    offsetX: -sideSign * fp.w * 0.46,
+    offsetZ: fp.d * lerp(-0.2, 0.18, water),
+  };
+  const tiers = [broadBase, highCore, frontPorch, sideWing, counterWing];
 
   return {
     id: 0,

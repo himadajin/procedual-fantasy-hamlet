@@ -253,7 +253,7 @@ function addRoof(m: Mesher, b: Building, tier: BuildingTier, baseY: number): voi
   const rot = b.rotation;
   const w = tier.width;
   const d = tier.depth;
-  const rh = b.roofHeight;
+  const rh = tierRoofHeight(b, tier);
   switch (b.roof) {
     case 'gable':
       m.gableRoof(cx, baseY, cz, w, d, rh, rot, b.overhang, col);
@@ -274,6 +274,17 @@ function addRoof(m: Mesher, b: Building, tier: BuildingTier, baseY: number): voi
     default:
       break;
   }
+}
+
+function tierRoofHeight(b: Building, tier: BuildingTier): number {
+  if (b.role !== 'monument') return b.roofHeight;
+
+  const main = b.tiers[0];
+  const mainMin = Math.min(main.width, main.depth);
+  const tierMin = Math.min(tier.width, tier.depth);
+  const sizeRatio = Math.max(0.25, Math.min(1, tierMin / mainMin));
+  const scaled = b.roofHeight * (0.45 + sizeRatio * 0.55);
+  return Math.min(scaled, tierMin * 0.9);
 }
 
 function addShedRoof(

@@ -54,6 +54,12 @@ describe('default world is a believable fortified settlement', () => {
     expect(monuments).toHaveLength(1);
   });
 
+  it('builds the monument as compound massing, not a single enlarged box', () => {
+    const monument = world.buildings.find((b) => b.role === 'monument')!;
+    expect(monument.tiers.length).toBeGreaterThanOrEqual(5);
+    expect(monument.tiers.some((t) => Math.hypot(t.offsetX, t.offsetZ) > 1)).toBe(true);
+  });
+
   it('has a substantial set of buildings, not a placeholder handful', () => {
     expect(world.buildings.length).toBeGreaterThan(25);
   });
