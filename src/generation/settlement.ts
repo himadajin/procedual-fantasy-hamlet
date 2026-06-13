@@ -28,6 +28,7 @@ import type {
   Bridge,
   Building,
   BuildingRole,
+  BuildingTier,
   Gate,
   Plaza,
   RoadSegment,
@@ -53,6 +54,11 @@ interface Candidate {
   face: number; // angle the front faces
   source: 'road' | 'plaza' | 'water';
   klass: 'main' | 'street' | 'lane' | 'ring';
+}
+
+interface Footprint {
+  w: number;
+  d: number;
 }
 
 /** Is there water within `radius` world units of `p`? */
@@ -314,8 +320,23 @@ export function generateSettlement(
 
     // Spacing against already-placed buildings.
     const role = decideRole(cand, r, inCore, isWaterside, bridges, gates, rng, params);
+    const ground = isWaterside ? water.level : sampleHeight(terrain, pos.x, pos.z);
+    const refineNoise = weather.fbm(pos.x * 0.05 + 5, pos.z * 0.05 - 2, 3);
     const footprint = roleFootprint(role, rng, params);
-    const radius = Math.max(footprint.w, footprint.d) * 0.62;
+    const building = makeBuilding(
+      rng,
+      nextId,
+      role,
+      pos,
+      ground,
+      cand.face + rng.jitter(0.12),
+      params,
+      footprint,
+      refineNoise,
+      isWaterside ? water.level : 0,
+    );
+    const terraceRadius = buildingPlanRadius(building);
+    const radius = terraceRadius * 0.86;
     let clash = false;
     const clashMargin = lerp(1.8, 0.5, settlement);
     for (const pl of placed) {
@@ -326,23 +347,10 @@ export function generateSettlement(
     }
     if (clash) continue;
 
-    const ground = isWaterside ? water.level : sampleHeight(terrain, pos.x, pos.z);
-    if (!isWaterside) terrace(terrain, pos, radius * 1.1, ground);
-
-    const refineNoise = weather.fbm(pos.x * 0.05 + 5, pos.z * 0.05 - 2, 3);
-    const building = makeBuilding(
-      rng,
-      nextId++,
-      role,
-      pos,
-      ground,
-      cand.face + rng.jitter(0.12),
-      params,
-      refineNoise,
-      isWaterside ? water.level : 0,
-    );
+    if (!isWaterside) terrace(terrain, pos, terraceRadius * 1.1, ground);
     buildings.push(building);
     placed.push({ pos, radius });
+    nextId += 1;
   }
 
   void prosperity;
@@ -393,11 +401,7 @@ function decideRole(
 // --------------------------------------------------------------------------
 // Footprint sizing per role
 // --------------------------------------------------------------------------
-function roleFootprint(
-  role: BuildingRole,
-  rng: Rng,
-  params: WorldParams,
-): { w: number; d: number } {
+function roleFootprint(role: BuildingRole, rng: Rng, params: WorldParams): Footprint {
   const prosperity = frac(params.prosperity);
   switch (role) {
     case 'monument':
@@ -560,13 +564,12 @@ function makeBuilding(
   ground: number,
   rotation: number,
   params: WorldParams,
+  fp: Footprint,
   refineNoise: number,
   waterLevel: number,
 ): Building {
   const prosperity = frac(params.prosperity);
   const defense = frac(params.defensePressure);
-  const fp = roleFootprint(role, rng, params);
-
   const refinement = clamp01(prosperity * 0.75 + refineNoise * 0.4 - 0.1);
 
   // Material trends with prosperity and role.
@@ -603,23 +606,8 @@ function makeBuilding(
   const roofHeight =
     role === 'tower' ? fp.w * 0.9 * steepness : Math.min(fp.w, fp.d) * 0.55 * steepness;
 
-  // Massing: main block, plus an optional lower wing for halls/larger houses.
-  const tiers = [
-    { width: fp.w, depth: fp.d, height: bodyHeight, baseOffset: 0, offsetX: 0, offsetZ: 0 },
-  ];
-  if ((role === 'hall' || (role === 'dwelling' && rng.chance(0.3))) && fp.d > 8) {
-    const wingW = fp.w * rng.range(0.5, 0.8);
-    const wingD = fp.d * rng.range(0.35, 0.5);
-    tiers.push({
-      width: wingW,
-      depth: wingD,
-      height: bodyHeight * rng.range(0.6, 0.85),
-      baseOffset: 0,
-      offsetX: (fp.w * 0.5 + wingW * 0.4) * (rng.chance(0.5) ? 1 : -1),
-      offsetZ: rng.jitter(fp.d * 0.15),
-    });
-    roof = 'gable';
-  }
+  const tiers = makeGenericTiers(rng, role, fp, bodyHeight, storeys, params, refinement);
+  if (tiers.length > 1 && roof === 'shed') roof = 'gable';
 
   const turrets =
     role === 'tower' ? 0 : role === 'hall' && defense > 0.5 && rng.chance(0.5) ? 2 : 0;
@@ -643,6 +631,205 @@ function makeBuilding(
     stiltHeight,
     storeys,
   };
+}
+
+function makeGenericTiers(
+  rng: Rng,
+  role: BuildingRole,
+  fp: Footprint,
+  bodyHeight: number,
+  storeys: number,
+  params: WorldParams,
+  refinement: number,
+): BuildingTier[] {
+  const settlement = frac(params.settlementPressure);
+  const prosperity = frac(params.prosperity);
+  const defense = frac(params.defensePressure);
+  const water = frac(params.waterPresence);
+
+  const tiers: BuildingTier[] = [
+    {
+      width: fp.w,
+      depth: fp.d,
+      height: bodyHeight,
+      baseOffset: 0,
+      offsetX: 0,
+      offsetZ: 0,
+    },
+  ];
+
+  if (role === 'tower') return tiers;
+
+  const addAttached = (
+    width: number,
+    depth: number,
+    height: number,
+    offsetX: number,
+    offsetZ: number,
+  ): void => {
+    tiers.push({
+      width,
+      depth,
+      height,
+      baseOffset: 0,
+      offsetX,
+      offsetZ,
+    });
+  };
+
+  const sideSign = rng.chance(0.5) ? 1 : -1;
+  const complexity = clamp01(
+    0.12 + settlement * 0.28 + prosperity * 0.35 + refinement * 0.25 + defense * 0.08,
+  );
+  const frontOverlap = fp.d * rng.range(0.12, 0.22);
+  const sideOverlap = fp.w * rng.range(0.1, 0.2);
+
+  if (role === 'hall') {
+    const crossW = fp.w * rng.range(0.56, 0.78);
+    const crossD = fp.d * rng.range(0.38, 0.56);
+    addAttached(
+      crossW,
+      crossD,
+      bodyHeight * rng.range(0.62, 0.82),
+      sideSign * (fp.w / 2 + crossW / 2 - sideOverlap),
+      rng.jitter(fp.d * 0.12),
+    );
+
+    const porchD = fp.d * rng.range(0.18, 0.28);
+    addAttached(
+      fp.w * rng.range(0.38, 0.58),
+      porchD,
+      bodyHeight * rng.range(0.42, 0.58),
+      0,
+      fp.d / 2 + porchD / 2 - frontOverlap,
+    );
+
+    if (prosperity > 0.45 && rng.chance(0.45 + complexity * 0.35)) {
+      const serviceD = fp.d * rng.range(0.22, 0.34);
+      addAttached(
+        fp.w * rng.range(0.36, 0.52),
+        serviceD,
+        bodyHeight * rng.range(0.48, 0.64),
+        -sideSign * fp.w * rng.range(0.08, 0.22),
+        -fp.d / 2 - serviceD / 2 + frontOverlap,
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'gatehouse' || role === 'wallhouse') {
+    const shoulderW = fp.w * rng.range(0.3, 0.42);
+    const shoulderD = fp.d * rng.range(0.45, 0.68);
+    const shoulderH = bodyHeight * rng.range(0.62, 0.9);
+    addAttached(
+      shoulderW,
+      shoulderD,
+      shoulderH,
+      fp.w / 2 + shoulderW / 2 - sideOverlap,
+      rng.jitter(fp.d * 0.08),
+    );
+    if (defense > 0.45 || rng.chance(complexity)) {
+      addAttached(
+        shoulderW * rng.range(0.85, 1.1),
+        shoulderD * rng.range(0.82, 1.05),
+        shoulderH * rng.range(0.88, 1.1),
+        -fp.w / 2 - shoulderW / 2 + sideOverlap,
+        rng.jitter(fp.d * 0.08),
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'waterside' || role === 'bridgehouse') {
+    const galleryD = fp.d * rng.range(0.24, 0.38);
+    addAttached(
+      fp.w * rng.range(0.58, 0.9),
+      galleryD,
+      bodyHeight * rng.range(0.42, 0.62),
+      rng.jitter(fp.w * 0.1),
+      fp.d / 2 + galleryD / 2 - frontOverlap,
+    );
+    if (water > 0.55 && rng.chance(0.35 + complexity * 0.45)) {
+      const sideW = fp.w * rng.range(0.34, 0.5);
+      const sideD = fp.d * rng.range(0.42, 0.62);
+      addAttached(
+        sideW,
+        sideD,
+        bodyHeight * rng.range(0.46, 0.66),
+        sideSign * (fp.w / 2 + sideW / 2 - sideOverlap),
+        -fp.d * rng.range(0.05, 0.18),
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'workshop') {
+    if (rng.chance(0.65 + complexity * 0.25)) {
+      const shedW = fp.w * rng.range(0.48, 0.74);
+      const shedD = fp.d * rng.range(0.32, 0.5);
+      addAttached(
+        shedW,
+        shedD,
+        bodyHeight * rng.range(0.36, 0.58),
+        sideSign * fp.w * rng.range(0.08, 0.24),
+        -fp.d / 2 - shedD / 2 + frontOverlap,
+      );
+    }
+    return tiers;
+  }
+
+  if (role === 'outlier') {
+    if (storeys === 1 && rng.chance(0.3 + prosperity * 0.2)) {
+      const leanW = fp.w * rng.range(0.34, 0.52);
+      const leanD = fp.d * rng.range(0.28, 0.42);
+      addAttached(
+        leanW,
+        leanD,
+        bodyHeight * rng.range(0.34, 0.5),
+        sideSign * (fp.w / 2 + leanW / 2 - sideOverlap),
+        -fp.d * rng.range(0.05, 0.2),
+      );
+    }
+    return tiers;
+  }
+
+  // Dwellings: a readable house plan emerges from one side wing, an occasional
+  // front bay, and a small rear service room in denser or wealthier streets.
+  if (rng.chance(0.42 + complexity * 0.42)) {
+    const wingW = fp.w * rng.range(0.36, 0.58);
+    const wingD = fp.d * rng.range(0.4, 0.72);
+    addAttached(
+      wingW,
+      wingD,
+      bodyHeight * rng.range(0.52, 0.82),
+      sideSign * (fp.w / 2 + wingW / 2 - sideOverlap),
+      rng.jitter(fp.d * 0.16),
+    );
+  }
+
+  if (rng.chance(0.22 + prosperity * 0.32 + settlement * 0.12)) {
+    const bayD = fp.d * rng.range(0.16, 0.28);
+    addAttached(
+      fp.w * rng.range(0.34, 0.54),
+      bayD,
+      bodyHeight * rng.range(0.38, 0.56),
+      rng.jitter(fp.w * 0.12),
+      fp.d / 2 + bayD / 2 - frontOverlap,
+    );
+  }
+
+  if (tiers.length < 3 && rng.chance(0.18 + settlement * 0.22)) {
+    const serviceD = fp.d * rng.range(0.18, 0.3);
+    addAttached(
+      fp.w * rng.range(0.32, 0.5),
+      serviceD,
+      bodyHeight * rng.range(0.36, 0.52),
+      -sideSign * fp.w * rng.range(0.08, 0.24),
+      -fp.d / 2 - serviceD / 2 + frontOverlap,
+    );
+  }
+
+  return tiers;
 }
 
 function clamp01(v: number): number {

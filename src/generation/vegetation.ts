@@ -78,7 +78,14 @@ export function generateVegetation(
   // Precompute building exclusion circles.
   const exclusions: { pos: Vec2; r: number }[] = buildings.map((b) => ({
     pos: b.position,
-    r: Math.max(b.tiers[0].width, b.tiers[0].depth) * 0.65 + 2,
+    r:
+      b.tiers.reduce(
+        (max, tier) =>
+          Math.max(max, Math.hypot(tier.offsetX, tier.offsetZ) + Math.max(tier.width, tier.depth)),
+        0,
+      ) *
+        0.62 +
+      2,
   }));
 
   for (let z = -half; z <= half && plants.length < maxPlants; z += spacing) {

@@ -60,6 +60,15 @@ describe('default world is a believable fortified settlement', () => {
     expect(monument.tiers.some((t) => Math.hypot(t.offsetX, t.offsetZ) > 1)).toBe(true);
   });
 
+  it('uses compound massing for ordinary buildings too', () => {
+    const ordinary = world.buildings.filter((b) => b.role !== 'monument');
+    const compound = ordinary.filter(
+      (b) => b.tiers.length > 1 && b.tiers.some((t) => Math.hypot(t.offsetX, t.offsetZ) > 0.5),
+    );
+    expect(compound.length).toBeGreaterThan(5);
+    expect(compound.length / ordinary.length).toBeGreaterThan(0.2);
+  });
+
   it('has a substantial set of buildings, not a placeholder handful', () => {
     expect(world.buildings.length).toBeGreaterThan(25);
   });
