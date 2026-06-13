@@ -15,7 +15,9 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "quality:gate": "node scripts/quality-gate.mjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run quality:gate && npm run format:check"
   },
   "dependencies": {
     "@react-three/drei": "^9.114.0",

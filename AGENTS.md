@@ -2,7 +2,7 @@
 
 Guidance for AI coding agents working in this repository. Human-facing overview
 lives in [README.md](README.md); the full product specification (in Japanese) is
-[docs/design.md](docs/design.md) and is the source of truth for *what* this app
+[docs/design.md](docs/design.md) and is the source of truth for _what_ this app
 must be.
 
 ## What this project is
@@ -36,7 +36,7 @@ First E2E run only: `npx playwright install chromium`.
 - `src/generation/` — headless world generator. **No Three.js imports here.**
   Pure functions of `(seed, params)`. Unit-tested. Pipeline runs in dependency
   order: `terrain → water → center → roads → defenses → settlement → vegetation
-  → summary` (see `generate.ts`).
+→ summary (see `generate.ts`).
 - `src/viewer/` — react-three-fiber viewer + procedural geometry/material
   builders (`build/`). All meshes and materials are generated here.
 - `src/ui/` — non-modal control panel (side panel on desktop, bottom sheet on
