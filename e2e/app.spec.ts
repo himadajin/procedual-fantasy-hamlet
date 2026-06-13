@@ -1,4 +1,12 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+async function openSummary(page: Page): Promise<void> {
+  const summary = page.locator('.summary');
+  if ((await summary.getAttribute('open')) === null) {
+    await page.locator('.summary > summary').click();
+  }
+  await expect(summary).toHaveAttribute('open', '');
+}
 
 test.describe('Procedural Fantasy Hamlet SPA', () => {
   test('boots straight into a generated diorama (no setup gate)', async ({ page }) => {
@@ -16,9 +24,10 @@ test.describe('Procedural Fantasy Hamlet SPA', () => {
       .toBeGreaterThan(vp.height * 0.8);
     expect((await canvas.boundingBox())!.width).toBeGreaterThanOrEqual(vp.width - 1);
 
-    // A generated summary is shown immediately (default seed/params).
-    await expect(page.getByRole('heading', { name: 'Generation summary' })).toBeVisible();
-    await expect(page.getByText(/structures$/)).toBeVisible();
+    // The inspector opens with generated world status and editable parameters.
+    await expect(page.locator('.world-status')).toContainText(/structures/);
+    await expect(page.locator('.summary > summary')).toBeVisible();
+    await expect(page.locator('.parameter-section')).toBeVisible();
 
     expect(errors, errors.join('\n')).toEqual([]);
   });
@@ -45,11 +54,13 @@ test.describe('Procedural Fantasy Hamlet SPA', () => {
     const seed = page.locator('#seed');
     await seed.fill('porthaven');
     await page.getByRole('button', { name: 'Generate' }).click();
+    await openSummary(page);
     await expect(page.getByText(/porthaven \(#/)).toBeVisible();
   });
 
   test('moving a slider does NOT regenerate until Generate is pressed', async ({ page }) => {
     await page.goto('/');
+    await openSummary(page);
     // Read the current building count from the summary.
     const buildingsDd = page.locator('.summary-row', { hasText: 'Buildings' }).locator('dd');
     const before = await buildingsDd.textContent();
@@ -69,6 +80,7 @@ test.describe('Procedural Fantasy Hamlet SPA', () => {
     await page.goto('/');
     await page.locator('#seed').fill('repeatable');
     await page.getByRole('button', { name: 'Generate' }).click();
+    await openSummary(page);
     await expect(page.getByText(/repeatable \(#/)).toBeVisible();
     const dd = page.locator('.summary-row', { hasText: 'Buildings' }).locator('dd');
     const first = await dd.textContent();
@@ -76,6 +88,7 @@ test.describe('Procedural Fantasy Hamlet SPA', () => {
     await page.reload();
     await page.locator('#seed').fill('repeatable');
     await page.getByRole('button', { name: 'Generate' }).click();
+    await openSummary(page);
     await expect(page.getByText(/repeatable \(#/)).toBeVisible();
     await expect(dd).toHaveText(first!);
   });
