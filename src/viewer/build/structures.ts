@@ -264,18 +264,23 @@ function addRoof(m: Mesher, b: Building, tier: BuildingTier, baseY: number): voi
   switch (roof) {
     case 'gable':
       m.gableRoof(cx, baseY, cz, w, d, rh, rot, b.overhang, col);
+      addGableRoofTrim(m, cx, baseY, cz, w, d, rh, rot, b.overhang, b);
       break;
     case 'hip':
       m.hipRoof(cx, baseY, cz, w, d, rh, rot, b.overhang, col);
+      addHipRoofTrim(m, cx, baseY, cz, w, d, rh, rot, b.overhang, b);
       break;
     case 'pyramid':
       m.pyramidRoof(cx, baseY, cz, w, d, rh, rot, b.overhang, col);
+      addPyramidRoofTrim(m, cx, baseY, cz, w, d, rh, rot, b.overhang, b);
       break;
     case 'spire':
       m.pyramidRoof(cx, baseY, cz, w, d, rh * 1.8, rot, b.overhang * 0.3, col);
+      addPyramidRoofTrim(m, cx, baseY, cz, w, d, rh * 1.8, rot, b.overhang * 0.3, b, true);
       break;
     case 'shed':
       addShedRoof(m, cx, baseY, cz, w, d, rh * 0.6, rot, b.overhang, col);
+      addShedRoofTrim(m, cx, baseY, cz, w, d, rh * 0.6, rot, b.overhang, b);
       break;
     case 'flat':
     default:
@@ -295,6 +300,144 @@ function tierRoofHeight(b: Building, tier: BuildingTier): number {
   const scaled =
     b.roofHeight * (b.role === 'monument' ? 0.45 + sizeRatio * 0.55 : 0.55 + sizeRatio * 0.45);
   return Math.min(scaled, tierMin * (b.role === 'monument' ? 0.9 : 0.72));
+}
+
+function roofTrimColor(b: Building): RGB {
+  if (b.role === 'monument' || b.role === 'tower' || b.role === 'gatehouse') {
+    return shade(PALETTE.roofSlate, 0.72);
+  }
+  return b.refinement > 0.45 ? PALETTE.timberDark : shade(roofColor(b), 0.72);
+}
+
+function localPoint(
+  cx: number,
+  y: number,
+  cz: number,
+  rot: number,
+  lx: number,
+  lz: number,
+): [number, number, number] {
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  return [cx + lx * cos + lz * sin, y, cz - lx * sin + lz * cos];
+}
+
+function addRoofEaveBox(
+  m: Mesher,
+  cx: number,
+  y: number,
+  cz: number,
+  rot: number,
+  lx: number,
+  lz: number,
+  sx: number,
+  sy: number,
+  sz: number,
+  color: RGB,
+): void {
+  const [x, by, z] = localPoint(cx, y, cz, rot, lx, lz);
+  m.box(x, by, z, sx, sy, sz, rot, color);
+}
+
+function addGableRoofTrim(
+  m: Mesher,
+  cx: number,
+  baseY: number,
+  cz: number,
+  width: number,
+  depth: number,
+  height: number,
+  rot: number,
+  overhang: number,
+  b: Building,
+): void {
+  const col = roofTrimColor(b);
+  const hz = depth / 2 + overhang;
+  const hx = width / 2 + overhang;
+  const beam = Math.max(0.16, Math.min(0.3, width * 0.035));
+  m.box(cx, baseY + height + beam * 0.45, cz, beam, beam, hz * 2 + 0.18, rot, col);
+  for (const side of [-1, 1]) {
+    addRoofEaveBox(m, cx, baseY + beam * 0.55, cz, rot, hx * side, 0, beam, beam, hz * 2, col);
+  }
+}
+
+function addHipRoofTrim(
+  m: Mesher,
+  cx: number,
+  baseY: number,
+  cz: number,
+  width: number,
+  depth: number,
+  height: number,
+  rot: number,
+  overhang: number,
+  b: Building,
+): void {
+  const col = roofTrimColor(b);
+  const hx = width / 2 + overhang;
+  const hz = depth / 2 + overhang;
+  const ridgeLen = Math.max(0.8, depth * 0.4);
+  const beam = Math.max(0.16, Math.min(0.28, Math.min(width, depth) * 0.035));
+  m.box(cx, baseY + height + beam * 0.35, cz, beam, beam, ridgeLen, rot, col);
+  addPerimeterRoofTrim(m, cx, baseY + beam * 0.45, cz, rot, hx, hz, beam, col);
+}
+
+function addPyramidRoofTrim(
+  m: Mesher,
+  cx: number,
+  baseY: number,
+  cz: number,
+  width: number,
+  depth: number,
+  height: number,
+  rot: number,
+  overhang: number,
+  b: Building,
+  tall = false,
+): void {
+  const col = roofTrimColor(b);
+  const hx = width / 2 + overhang;
+  const hz = depth / 2 + overhang;
+  const beam = Math.max(0.16, Math.min(0.28, Math.min(width, depth) * 0.035));
+  addPerimeterRoofTrim(m, cx, baseY + beam * 0.45, cz, rot, hx, hz, beam, col);
+  m.cone(cx, baseY + height, cz, beam * 1.2, beam * (tall ? 5.2 : 3.2), 5, col);
+}
+
+function addShedRoofTrim(
+  m: Mesher,
+  cx: number,
+  baseY: number,
+  cz: number,
+  width: number,
+  depth: number,
+  rise: number,
+  rot: number,
+  overhang: number,
+  b: Building,
+): void {
+  const col = roofTrimColor(b);
+  const hx = width / 2 + overhang;
+  const hz = depth / 2 + overhang;
+  const beam = Math.max(0.14, Math.min(0.24, Math.min(width, depth) * 0.035));
+  addRoofEaveBox(m, cx, baseY + beam * 0.45, cz, rot, -hx, 0, beam, beam, hz * 2, col);
+  addRoofEaveBox(m, cx, baseY + rise + beam * 0.45, cz, rot, hx, 0, beam, beam, hz * 2, col);
+}
+
+function addPerimeterRoofTrim(
+  m: Mesher,
+  cx: number,
+  y: number,
+  cz: number,
+  rot: number,
+  hx: number,
+  hz: number,
+  beam: number,
+  color: RGB,
+): void {
+  for (const side of [-1, 1]) {
+    addRoofEaveBox(m, cx, y, cz, rot, hx * side, 0, beam, beam, hz * 2, color);
+    addRoofEaveBox(m, cx, y, cz, rot, 0, hz * side, hx * 2 + beam, beam, beam, color);
+  }
 }
 
 function addShedRoof(
