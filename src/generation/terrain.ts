@@ -2,14 +2,15 @@
  * Terrain phase. Builds the heightfield that every later phase reads from.
  *
  * The terrain is not decoration: ruggedness sets relief and cliffs, a soft
- * central knoll gives the monument prominent ground, and a raised, irregular
- * hill rim closes the diorama so it never looks like a cut board. World scale
- * sets the physical extent.
+ * central knoll gives the monument prominent ground, and a continuous boundary
+ * field makes the finite diorama close naturally without forcing a mountain
+ * ring. World scale sets the physical extent.
  */
 import { ValueNoise2D } from './noise';
 import { Rng } from './rng';
 import { frac, type WorldParams } from './params';
 import { idx, smoothstep, lerp } from './grid';
+import { edgeInfluenceAt, outerFadeAt } from './fields';
 import type { TerrainData } from './types';
 
 /** Fixed grid resolution — extent scales with worldScale, not vertex count. */
@@ -39,10 +40,15 @@ export function generateTerrain(seedValue: number, params: WorldParams): Terrain
     lerp(3, 16, frac(params.monumentality)) + lerp(0, 10, frac(params.defensePressure));
   const knollRadius = half * lerp(0.16, 0.28, scale);
 
-  // Edge hills that ring and close the diorama.
-  const rimAmp = lerp(14, 34, 0.4 + 0.6 * rugged);
-  const rimPhase = rng.range(0, Math.PI * 2);
-  const rimLobes = rng.int(3, 6);
+  // Boundary tendencies. Rugged/defended worlds tend to close with ridges and
+  // escarpments; wet worlds tend to close with lower marshy edges. Both are
+  // continuous responses to the edge field, not visible modes.
+  const water = frac(params.waterPresence);
+  const defense = frac(params.defensePressure);
+  const highlandTendency = Math.max(0, Math.min(1, rugged * 0.75 + defense * 0.25 - water * 0.35));
+  const wetlandTendency = Math.max(0, Math.min(1, water * 0.8 - rugged * 0.25 + rng.jitter(0.12)));
+  const boundaryPhase = rng.range(0, Math.PI * 2);
+  const boundaryLobes = rng.int(3, 7);
 
   const heights = new Float32Array(GRID * GRID);
 
@@ -84,19 +90,24 @@ export function generateTerrain(seedValue: number, params: WorldParams): Terrain
       // top rather than a sharp peak.
       h -= knoll * knoll * knollHeight * 0.22;
 
-      // Raised, lobed hill rim that then plunges away into the fog, so the
-      // diorama reads as a plateau ringed by hills — never a cut square board.
-      const rNorm = r / half;
+      // Boundary pressure: as a point approaches the finite edge, terrain
+      // becomes less buildable and more environmental. It may become ridged,
+      // marshy or simply fade down into fog depending on the same parameters
+      // that drive the rest of the world.
+      const p = { x, z };
+      const edge = edgeInfluenceAt(half, p);
+      const outer = outerFadeAt(half, p);
       const ang = Math.atan2(z, x);
-      const lobe = 0.5 + 0.5 * Math.sin(ang * rimLobes + rimPhase);
-      const rimNoise = noise.fbm(sx * freq * 2 + 200, sz * freq * 2 + 200, 3);
-      // Hill band crests around 0.82 of the radius.
-      const rise = smoothstep(0.5, 0.8, rNorm) * (1 - smoothstep(0.82, 1.0, rNorm));
-      const rimHeight = rimAmp * (0.55 + 0.45 * lobe) * (0.6 + 0.8 * rimNoise);
-      h += rise * rimHeight;
-      // Beyond the hills, fall steeply below the basin into the mist.
-      const drop = smoothstep(0.9, 1.32, rNorm);
-      h -= drop * (amplitude * 1.4 + 30);
+      const lobe = 0.5 + 0.5 * Math.sin(ang * boundaryLobes + boundaryPhase);
+      const boundaryNoise = noise.fbm(sx * freq * 2 + 200, sz * freq * 2 + 200, 3);
+      const escarpment = smoothstep(0.68, 0.9, edge) * (1 - outer);
+      const ridgeHeight =
+        lerp(4, 28, highlandTendency) * escarpment * (0.35 + 0.45 * lobe + 0.55 * boundaryNoise);
+      const wetLowering =
+        lerp(1, 14, wetlandTendency) * smoothstep(0.45, 0.95, edge) * (0.45 + 0.75 * boundaryNoise);
+      h += ridgeHeight;
+      h -= wetLowering;
+      h -= outer * (amplitude * lerp(0.75, 1.35, rugged) + lerp(18, 34, 1 - wetlandTendency));
 
       heights[idx(GRID, i, j)] = h;
       if (h < minH) minH = h;

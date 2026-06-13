@@ -8,6 +8,7 @@
 import { Rng } from './rng';
 import { frac, type WorldParams } from './params';
 import { cellToWorld, idx, lerp } from './grid';
+import { basinInfluenceAt } from './fields';
 import type { TerrainData, Vec2, WaterData, WaterBodyKind } from './types';
 
 function quantile(values: Float32Array, q: number): number {
@@ -51,14 +52,13 @@ export function generateWater(
   const mask = new Uint8Array(size * size);
   const kinds: WaterBodyKind[] = [];
 
-  // Consider only the inner basin for the water level — the terrain plunges
-  // into the fog past ~0.85R, and those deep cliffs must not skew the quantile
-  // nor be flooded into a surrounding "ocean".
+  // Consider only the inner basin for the water level. Edge fade and boundary
+  // wetlands should not skew the quantile into a surrounding "ocean".
   const basin: number[] = [];
   for (let j = 0; j < size; j++) {
     for (let i = 0; i < size; i++) {
       const w = cellToWorld(terrain, i, j);
-      if (Math.hypot(w.x, w.z) / half < 0.82) basin.push(heights[idx(size, i, j)]);
+      if (basinInfluenceAt(half, w) > 0.75) basin.push(heights[idx(size, i, j)]);
     }
   }
   const basinArr = Float32Array.from(basin);
@@ -74,7 +74,7 @@ export function generateWater(
     for (let i = 0; i < size; i++) {
       const k = idx(size, i, j);
       const w = cellToWorld(terrain, i, j);
-      if (Math.hypot(w.x, w.z) / half >= 0.88) continue;
+      if (basinInfluenceAt(half, w) <= 0.45) continue;
       if (heights[k] < level) {
         mask[k] = 1;
         lowCells++;

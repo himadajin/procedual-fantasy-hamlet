@@ -1,8 +1,8 @@
 /**
- * Vegetation phase. Plants are an environmental element, not clutter: a forest
- * belt closes the outer rim, grass and shrubs thin out toward the built core,
- * reeds and low shrubs line the shore, and sparse trees cling to slopes. Density
- * is suppressed inside the walls and around buildings and roads.
+ * Vegetation phase. Plants are an environmental element, not clutter: edge
+ * influence closes the finite diorama, grass and shrubs thin out toward the
+ * built core, reeds and low shrubs line the shore, and sparse trees cling to
+ * slopes. Density is suppressed inside the walls and around buildings and roads.
  */
 import { ValueNoise2D } from './noise';
 import { Rng } from './rng';
@@ -17,6 +17,7 @@ import {
   worldToCellF,
   clampInt,
 } from './grid';
+import { centerDistanceNorm, edgeInfluenceOnTerrain } from './fields';
 import type {
   Building,
   Plant,
@@ -83,18 +84,18 @@ export function generateVegetation(
   for (let z = -half; z <= half && plants.length < maxPlants; z += spacing) {
     for (let x = -half; x <= half && plants.length < maxPlants; x += spacing) {
       const p: Vec2 = { x: x + rng.jitter(spacing * 0.5), z: z + rng.jitter(spacing * 0.5) };
-      const r = Math.hypot(p.x, p.z);
-      const rNorm = r / half;
+      const rNorm = centerDistanceNorm(half, p);
       if (rNorm > 1.12) continue;
+      const edge = edgeInfluenceOnTerrain(terrain, p);
 
       const onWater = isWater(terrain, water, p);
       const shore = !onWater && shoreProximity(terrain, water, p, 2.4);
 
-      // Density profile by radius: forest belt outside, sparse core.
-      const coreSuppression = smoothstep(enclosureRadius * 0.6, settlementRadius, r);
-      const forestBelt = smoothstep(0.5, 0.85, rNorm);
+      // Density profile by meaning fields: stronger toward the environmental
+      // edge, weaker in the defended/built core.
+      const coreSuppression = smoothstep(enclosureRadius * 0.6, settlementRadius, rNorm * half);
       const scatterN = scatter.fbm(p.x * 0.03 + 3, p.z * 0.03 - 4, 4);
-      let density = 0.12 + coreSuppression * 0.5 + forestBelt * 0.7;
+      let density = 0.12 + coreSuppression * 0.45 + edge * 0.72;
       density *= 0.4 + scatterN * 1.1; // clumping
       density *= 1 - settlement * 0.25; // tidier settlements clear more
 
