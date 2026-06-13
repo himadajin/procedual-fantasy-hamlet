@@ -16,8 +16,8 @@ export function Summary({ summary }: { summary: WorldSummary }): JSX.Element {
     ['Render load', summary.complexity],
   ];
   return (
-    <section className="summary" aria-label="Generation summary">
-      <h2>Generation summary</h2>
+    <details className="summary" aria-label="Generation summary">
+      <summary>Summary</summary>
       <dl>
         {rows.map(([k, v]) => (
           <div className="summary-row" key={k}>
@@ -26,6 +26,6 @@ export function Summary({ summary }: { summary: WorldSummary }): JSX.Element {
           </div>
         ))}
       </dl>
-    </section>
+    </details>
   );
 }

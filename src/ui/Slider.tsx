@@ -19,9 +19,7 @@ export function Slider({ meta, value, onChange }: SliderProps): JSX.Element {
   return (
     <div className="slider">
       <div className="slider-head">
-        <label htmlFor={`p-${meta.key}`}>
-          {meta.label} <span className="slider-jp">/ {meta.jp}</span>
-        </label>
+        <label htmlFor={`p-${meta.key}`}>{meta.label}</label>
         <output htmlFor={`p-${meta.key}`}>{value}</output>
       </div>
       <input
