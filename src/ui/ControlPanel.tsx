@@ -1,8 +1,8 @@
 /**
  * The single non-modal control panel: seed row, randomize, the seven sliders,
  * Generate, Reset Camera and the read-only summary. On wide screens it docks as
- * a side panel; on phones it becomes a bottom sheet with a drag handle. Either
- * way it can be collapsed so the diorama stays the focus.
+ * a side panel; on phones it opens downward from the same top-right control
+ * point. Either way it can be collapsed so the diorama stays the focus.
  */
 import { useState } from 'react';
 import { PARAM_META, type WorldParams } from '../generation/params';
@@ -33,8 +33,8 @@ export function ControlPanel(props: ControlPanelProps): JSX.Element {
         aria-expanded={open}
         aria-controls="panel-body"
       >
-        <span className="grip" aria-hidden="true" />
-        <span className="panel-handle-label">{open ? 'Hide controls' : 'Controls'}</span>
+        <span className="panel-handle-label">Controls</span>
+        <span className="panel-toggle-caret" aria-hidden="true" />
       </button>
 
       <div className="panel-body" id="panel-body" hidden={!open}>

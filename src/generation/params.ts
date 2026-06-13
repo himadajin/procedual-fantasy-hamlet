@@ -26,7 +26,6 @@ export type ParamKey = keyof WorldParams;
 export interface ParamMeta {
   key: ParamKey;
   label: string;
-  jp: string;
   blurb: string;
 }
 
@@ -34,43 +33,36 @@ export const PARAM_META: readonly ParamMeta[] = [
   {
     key: 'worldScale',
     label: 'World Scale',
-    jp: '敷地規模',
     blurb: 'Overall size of the diorama and how much gets built.',
   },
   {
     key: 'settlementPressure',
     label: 'Settlement Pressure',
-    jp: '居住圧力',
     blurb: 'How tightly buildings and streets gather toward the center.',
   },
   {
     key: 'defensePressure',
     label: 'Defense Pressure',
-    jp: '防衛圧力',
     blurb: 'Walls, towers, gates, moats and winding, guarded approaches.',
   },
   {
     key: 'prosperity',
     label: 'Prosperity',
-    jp: '繁栄度',
     blurb: 'Finer materials, tidier streets, better roofs and windows.',
   },
   {
     key: 'terrainRuggedness',
     label: 'Terrain Ruggedness',
-    jp: '起伏の強さ',
     blurb: 'Below 50 is gentler; above 50 splits buildable land.',
   },
   {
     key: 'waterPresence',
     label: 'Water Presence',
-    jp: '水辺の強さ',
     blurb: 'How strongly shores, bridges and water defenses shape the world.',
   },
   {
     key: 'monumentality',
     label: 'Monumentality',
-    jp: '中心建築の格',
     blurb: 'Grandeur and presence of the single central monument.',
   },
 ] as const;
