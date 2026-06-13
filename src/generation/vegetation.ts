@@ -96,9 +96,28 @@ export function generateVegetation(
       const rNorm = centerDistanceNorm(half, p);
       if (rNorm > 1.12) continue;
       const edge = edgeInfluenceOnTerrain(terrain, p);
+      const centerDist = rNorm * half;
+      const defendedCore = enclosureRadius > 4 && centerDist < enclosureRadius * 0.95;
+      const outsideDefense = enclosureRadius > 4 && centerDist > enclosureRadius * 1.05;
 
       const onWater = isWater(terrain, water, p);
       const shore = !onWater && shoreProximity(terrain, water, p, 2.4);
+      const slope = slopeAt(terrain, p.x, p.z);
+      const roadClearance = clearanceToRoad(p, roads);
+      const accessClearance = clearanceToAccess(p, accesses);
+
+      // Skip built surfaces first; later rules may place low verge plants near,
+      // but not on, roads and entrance paths.
+      if (roadClearance < 1.15 || accessClearance < 0.85) continue;
+
+      let blocked = false;
+      for (const ex of exclusions) {
+        if (distance(ex.pos, p) < ex.r) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
 
       // Density profile by meaning fields: stronger toward the environmental
       // edge, weaker in the defended/built core.
@@ -107,13 +126,15 @@ export function generateVegetation(
       let density = 0.12 + coreSuppression * 0.45 + edge * 0.72;
       density *= 0.4 + scatterN * 1.1; // clumping
       density *= 1 - settlement * 0.25; // tidier settlements clear more
-
-      const slope = slopeAt(terrain, p.x, p.z);
+      if (defendedCore) density *= 0.35;
+      if (outsideDefense) density *= 1.18;
 
       // Shore vegetation regardless of forest belt.
       if (shore && waterPresence > 0.3) {
-        if (rng.chance(0.5 * waterPresence)) {
-          plants.push(makePlant(rng, terrain, p, rng.chance(0.5) ? 'reed' : 'shrub'));
+        const shoreChance = (defendedCore ? 0.28 : 0.58) * waterPresence;
+        if (rng.chance(shoreChance)) {
+          const kind = rng.chance(0.55) ? 'reed' : rng.chance(0.55) ? 'shrub' : 'grass';
+          plants.push(makePlant(rng, terrain, p, kind));
         }
         continue;
       }
@@ -125,30 +146,28 @@ export function generateVegetation(
         continue;
       }
 
+      const roadVerge =
+        roadClearance < 4.4 && centerDist < settlementRadius * 1.25 && !defendedCore;
+      if (roadVerge) {
+        const vergeChance = 0.18 * (1 - settlement * 0.35) * (0.6 + scatterN);
+        if (rng.chance(vergeChance)) {
+          plants.push(makePlant(rng, terrain, p, rng.chance(0.72) ? 'grass' : 'shrub'));
+        }
+        continue;
+      }
+
       // Sparser on steep ground (but a few cling to cliffs).
       if (slope > 0.7) density *= 0.3;
 
       if (!rng.chance(density)) continue;
 
-      // Skip near buildings.
-      let blocked = false;
-      for (const ex of exclusions) {
-        if (distance(ex.pos, p) < ex.r) {
-          blocked = true;
-          break;
-        }
-      }
-      if (blocked) continue;
-
-      // Skip on/near roads.
-      if (nearRoad(p, roads, 2.5)) continue;
-      if (nearAccess(p, accesses, 1.2)) continue;
-
       // Pick a kind by terrain context.
       let kind: PlantKind;
-      if (slope > 0.55 || rNorm > 0.8) kind = rng.chance(0.6) ? 'pine' : 'tree';
+      if (slope > 0.58) kind = rng.chance(0.72) ? 'pine' : 'tree';
+      else if (rNorm > 0.82 || edge > 0.55) kind = rng.chance(0.62) ? 'pine' : 'tree';
+      else if (outsideDefense && rng.chance(0.28)) kind = 'grass';
       else if (rNorm < 0.5 && rng.chance(0.5)) kind = 'shrub';
-      else kind = rng.chance(0.7) ? 'tree' : 'pine';
+      else kind = rng.chance(0.55) ? 'tree' : rng.chance(0.55) ? 'grass' : 'pine';
 
       plants.push(makePlant(rng, terrain, p, kind));
     }
@@ -158,38 +177,35 @@ export function generateVegetation(
   return plants;
 }
 
-function nearRoad(p: Vec2, roads: RoadSegment[], margin: number): boolean {
+function clearanceToRoad(p: Vec2, roads: RoadSegment[]): number {
+  let best = Infinity;
   for (const road of roads) {
-    const lim = road.width * 0.5 + margin;
     for (let i = 0; i < road.points.length - 1; i += 1) {
-      const a = road.points[i];
-      const b = road.points[i + 1];
-      const abx = b.x - a.x;
-      const abz = b.z - a.z;
-      const len2 = abx * abx + abz * abz || 1e-6;
-      let t = ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2;
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-      const cx = a.x + abx * t;
-      const cz = a.z + abz * t;
-      if (Math.hypot(p.x - cx, p.z - cz) < lim) return true;
+      const d = distanceToSegment(p, road.points[i], road.points[i + 1]) - road.width * 0.5;
+      if (d < best) best = d;
     }
   }
-  return false;
+  return best;
 }
 
-function nearAccess(p: Vec2, accesses: BuildingAccess[], margin: number): boolean {
+function clearanceToAccess(p: Vec2, accesses: BuildingAccess[]): number {
+  let best = Infinity;
   for (const access of accesses) {
-    const lim = access.width * 0.5 + margin;
-    const abx = access.end.x - access.start.x;
-    const abz = access.end.z - access.start.z;
-    const len2 = abx * abx + abz * abz || 1e-6;
-    let t = ((p.x - access.start.x) * abx + (p.z - access.start.z) * abz) / len2;
-    t = t < 0 ? 0 : t > 1 ? 1 : t;
-    const cx = access.start.x + abx * t;
-    const cz = access.start.z + abz * t;
-    if (Math.hypot(p.x - cx, p.z - cz) < lim) return true;
+    const d = distanceToSegment(p, access.start, access.end) - access.width * 0.5;
+    if (d < best) best = d;
   }
-  return false;
+  return best;
+}
+
+function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz || 1e-6;
+  let t = ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const cx = a.x + abx * t;
+  const cz = a.z + abz * t;
+  return Math.hypot(p.x - cx, p.z - cz);
 }
 
 function makePlant(
@@ -200,7 +216,16 @@ function makePlant(
   forcedGround?: number,
 ): Plant {
   const ground = forcedGround ?? sampleHeight(terrain, pos.x, pos.z);
-  const base = kind === 'reed' ? 0.7 : kind === 'shrub' ? 0.8 : kind === 'pine' ? 1.1 : 1.0;
+  const base =
+    kind === 'reed'
+      ? 0.7
+      : kind === 'grass'
+        ? 0.55
+        : kind === 'shrub'
+          ? 0.8
+          : kind === 'pine'
+            ? 1.1
+            : 1.0;
   return {
     position: pos,
     ground,

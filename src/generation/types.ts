@@ -168,7 +168,7 @@ export interface Bridge {
   hasHouse: boolean;
 }
 
-export type PlantKind = 'tree' | 'pine' | 'shrub' | 'reed';
+export type PlantKind = 'tree' | 'pine' | 'shrub' | 'reed' | 'grass';
 
 export interface Plant {
   position: Vec2;

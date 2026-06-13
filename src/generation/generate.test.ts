@@ -35,6 +35,9 @@ function fingerprint(world: ReturnType<typeof generateWorld>): string {
       Math.round(a.end.z * 100),
     );
   }
+  for (const p of world.plants.slice(0, 24)) {
+    parts.push(p.kind, Math.round(p.position.x * 100), Math.round(p.position.z * 100));
+  }
   return parts.join('|');
 }
 
@@ -110,6 +113,13 @@ describe('default world is a believable fortified settlement', () => {
     expect(world.buildings.length).toBeGreaterThan(25);
   });
 
+  it('uses vegetation to close the outer rim more than the built core', () => {
+    const inner = world.plants.filter((p) => dist(p.position, world.center) < world.half * 0.32);
+    const outer = world.plants.filter((p) => dist(p.position, world.center) > world.half * 0.62);
+
+    expect(outer.length).toBeGreaterThan(inner.length);
+  });
+
   it('produces walls, towers and water with the default (high defense/water)', () => {
     expect(world.summary.hasWalls).toBe(true);
     expect(world.towers.length).toBeGreaterThan(0);
@@ -162,6 +172,22 @@ describe('parameters actually change the world', () => {
     const dry = generateWorld({ seed: 'x', params: { ...base, waterPresence: 0 } });
     const wet = generateWorld({ seed: 'x', params: { ...base, waterPresence: 100 } });
     expect(wet.water.coverage).toBeGreaterThan(dry.water.coverage);
+  });
+
+  it('water and open space produce shore plants and low grass', () => {
+    const wet = generateWorld({
+      seed: 'reedford',
+      params: {
+        ...base,
+        worldScale: 52,
+        waterPresence: 86,
+        terrainRuggedness: 62,
+        prosperity: 45,
+      },
+    });
+
+    expect(wet.plants.some((p) => p.kind === 'reed')).toBe(true);
+    expect(wet.plants.some((p) => p.kind === 'grass')).toBe(true);
   });
 
   it('world scale grows the physical extent', () => {

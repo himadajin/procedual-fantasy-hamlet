@@ -56,6 +56,20 @@ function addReed(m: Plant, mesher: Mesher): void {
   }
 }
 
+function addGrass(m: Plant, mesher: Mesher): void {
+  const s = m.scale;
+  const x = m.position.x;
+  const z = m.position.z;
+  const y = m.ground;
+  const color = mix(PALETTE.grassHigh, PALETTE.grassDry, (Math.sin(x * 0.19 - z * 0.23) + 1) * 0.2);
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2 + Math.sin(x + z) * 0.4;
+    const ox = Math.cos(a) * 0.22 * s;
+    const oz = Math.sin(a) * 0.22 * s;
+    mesher.cone(x + ox, y, z + oz, 0.18 * s, 0.75 * s, 4, color);
+  }
+}
+
 export function buildFoliageGeometry(world: World): BufferGeometryLike | null {
   if (world.plants.length === 0) return null;
   const mesher = new Mesher();
@@ -72,6 +86,9 @@ export function buildFoliageGeometry(world: World): BufferGeometryLike | null {
         break;
       case 'reed':
         addReed(p, mesher);
+        break;
+      case 'grass':
+        addGrass(p, mesher);
         break;
     }
   }
