@@ -9,6 +9,9 @@
   --accent-2: #6f93b0;
   --radius: 14px;
   --shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --controls-max-width: 420px;
+  --controls-wide-width: var(--controls-max-width);
+  --controls-narrow-width: min(var(--controls-max-width), calc(100vw - 24px));
   font-family:
     ui-sans-serif,
     system-ui,
@@ -170,7 +173,7 @@ body,
     top: 16px;
     right: 16px;
     bottom: 16px;
-    width: 340px;
+    width: var(--controls-wide-width);
     border-radius: var(--radius);
     padding: 8px 12px 14px;
     display: flex;
@@ -200,9 +203,10 @@ body,
 @media (max-width: 759px) {
   .panel {
     top: max(60px, calc(56px + env(safe-area-inset-top)));
-    left: 12px;
     right: 12px;
+    left: auto;
     bottom: auto;
+    width: var(--controls-narrow-width);
     border-radius: var(--radius);
     padding: 8px 12px 14px;
     max-height: min(76vh, calc(100vh - 72px - env(safe-area-inset-bottom)));
