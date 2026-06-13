@@ -100,11 +100,18 @@ export function generateTerrain(seedValue: number, params: WorldParams): Terrain
       const ang = Math.atan2(z, x);
       const lobe = 0.5 + 0.5 * Math.sin(ang * boundaryLobes + boundaryPhase);
       const boundaryNoise = noise.fbm(sx * freq * 2 + 200, sz * freq * 2 + 200, 3);
-      const escarpment = smoothstep(0.68, 0.9, edge) * (1 - outer);
+      const localClosure = boundaryNoise * 0.58 + lobe * 0.42;
+      const ridgePatch = smoothstep(0.48, 0.88, localClosure);
+      const escarpment = smoothstep(0.72, 0.96, edge) * (1 - outer) * ridgePatch;
       const ridgeHeight =
-        lerp(4, 28, highlandTendency) * escarpment * (0.35 + 0.45 * lobe + 0.55 * boundaryNoise);
+        lerp(1.5, 18, highlandTendency) *
+        escarpment *
+        highlandTendency *
+        (0.7 + 0.55 * boundaryNoise);
       const wetLowering =
-        lerp(1, 14, wetlandTendency) * smoothstep(0.45, 0.95, edge) * (0.45 + 0.75 * boundaryNoise);
+        lerp(1, 15, wetlandTendency) *
+        smoothstep(0.5, 0.95, edge) *
+        (0.5 + 0.5 * (1 - ridgePatch) + 0.45 * boundaryNoise);
       h += ridgeHeight;
       h -= wetLowering;
       h -= outer * (amplitude * lerp(0.75, 1.35, rugged) + lerp(18, 34, 1 - wetlandTendency));
