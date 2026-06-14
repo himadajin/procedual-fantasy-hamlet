@@ -5,12 +5,70 @@
  * never navigates away — the old diorama stays on screen under a light
  * "Generating…" badge until the new one is ready.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  buildScenarioUrl,
+  parseScenarioSearch,
+  type DebugCamera,
+  type DebugCameraSnapshot,
+} from './debug/scenario';
+import { buildWorldMetrics, type DebugWorldMetrics } from './debug/metrics';
 import { generateWorld } from './generation/generate';
-import { DEFAULT_PARAMS, DEFAULT_SEED, type WorldParams } from './generation/params';
+import type { WorldParams } from './generation/params';
 import type { World } from './generation/types';
-import { Viewer } from './viewer/Viewer';
+import { Viewer, type ViewerDebugHandle } from './viewer/Viewer';
 import { ControlPanel } from './ui/ControlPanel';
+
+interface HamletDebugState {
+  seed: string;
+  params: WorldParams;
+  camera: DebugCameraSnapshot | null;
+  scenarioUrl: string;
+  world: {
+    seed: string;
+    seedValue: number;
+    half: number;
+    center: World['center'];
+    summary: World['summary'];
+    metrics: DebugWorldMetrics;
+  };
+}
+
+interface HamletDebugApi {
+  getState: () => HamletDebugState;
+  scenarioUrl: () => string;
+  setCamera: (camera: DebugCamera) => void;
+}
+
+declare global {
+  interface Window {
+    __hamletDebug?: HamletDebugApi;
+  }
+}
+
+function sameCameraSnapshot(a: DebugCameraSnapshot | null, b: DebugCameraSnapshot | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const valuesA = [
+    a.position.x,
+    a.position.y,
+    a.position.z,
+    a.target.x,
+    a.target.y,
+    a.target.z,
+    a.distance,
+  ];
+  const valuesB = [
+    b.position.x,
+    b.position.y,
+    b.position.z,
+    b.target.x,
+    b.target.y,
+    b.target.z,
+    b.distance,
+  ];
+  return valuesA.every((value, index) => Math.abs(value - valuesB[index]) < 0.001);
+}
 
 function randomSeed(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -20,14 +78,18 @@ function randomSeed(): string {
 }
 
 export default function App(): JSX.Element {
+  const initialScenario = useMemo(() => parseScenarioSearch(window.location.search), []);
+  const viewerDebug = useRef<ViewerDebugHandle>(null);
+
   // Draft inputs (edited freely; only applied on Generate).
-  const [seed, setSeed] = useState<string>(DEFAULT_SEED);
-  const [params, setParams] = useState<WorldParams>(DEFAULT_PARAMS);
+  const [seed, setSeed] = useState<string>(initialScenario.seed);
+  const [params, setParams] = useState<WorldParams>(initialScenario.params);
 
   // The world currently on screen.
   const [world, setWorld] = useState<World>(() =>
-    generateWorld({ seed: DEFAULT_SEED, params: DEFAULT_PARAMS }),
+    generateWorld({ seed: initialScenario.seed, params: initialScenario.params }),
   );
+  const [cameraSnapshot, setCameraSnapshot] = useState<DebugCameraSnapshot | null>(null);
   const [generating, setGenerating] = useState(false);
   const [resetSignal, setResetSignal] = useState(0);
   const pending = useRef(false);
@@ -53,6 +115,31 @@ export default function App(): JSX.Element {
 
   const randomize = useCallback(() => setSeed(randomSeed()), []);
   const resetCamera = useCallback(() => setResetSignal((n) => n + 1), []);
+  const updateCameraSnapshot = useCallback((camera: DebugCameraSnapshot | null) => {
+    setCameraSnapshot((current) => (sameCameraSnapshot(current, camera) ? current : camera));
+  }, []);
+
+  const debugState = useMemo<HamletDebugState>(
+    () => ({
+      seed,
+      params,
+      camera: cameraSnapshot,
+      scenarioUrl: buildScenarioUrl(window.location.href, {
+        seed,
+        params,
+        camera: cameraSnapshot ?? undefined,
+      }),
+      world: {
+        seed: world.seed,
+        seedValue: world.seedValue,
+        half: world.half,
+        center: world.center,
+        summary: world.summary,
+        metrics: buildWorldMetrics(world),
+      },
+    }),
+    [cameraSnapshot, params, seed, world],
+  );
 
   // Keyboard nicety: "g" regenerates, "r" resets the camera.
   useEffect(() => {
@@ -65,11 +152,51 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey);
   }, [regenerate, resetCamera]);
 
+  useEffect(() => {
+    const getScenarioUrl = () =>
+      buildScenarioUrl(window.location.href, {
+        seed,
+        params,
+        camera: viewerDebug.current?.getCameraSnapshot() ?? undefined,
+      });
+
+    window.__hamletDebug = {
+      getState: () => {
+        const camera = viewerDebug.current?.getCameraSnapshot() ?? debugState.camera;
+        return {
+          ...debugState,
+          camera,
+          scenarioUrl: buildScenarioUrl(window.location.href, {
+            seed,
+            params,
+            camera: camera ?? undefined,
+          }),
+        };
+      },
+      scenarioUrl: getScenarioUrl,
+      setCamera: (camera) => viewerDebug.current?.setCamera(camera),
+    };
+
+    return () => {
+      delete window.__hamletDebug;
+    };
+  }, [debugState, params, seed]);
+
   return (
     <div className="app">
       <div className="viewer-layer">
-        <Viewer world={world} resetSignal={resetSignal} />
+        <Viewer
+          ref={viewerDebug}
+          world={world}
+          resetSignal={resetSignal}
+          initialCamera={initialScenario.camera}
+          onCameraSnapshotChange={updateCameraSnapshot}
+        />
       </div>
+
+      <output className="debug-state" data-testid="hamlet-debug-state" aria-hidden="true">
+        {JSON.stringify(debugState)}
+      </output>
 
       {generating && (
         <div className="generating-badge" role="status" aria-live="polite">

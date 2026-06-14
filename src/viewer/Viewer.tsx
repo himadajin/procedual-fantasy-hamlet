@@ -3,11 +3,12 @@
  * fixed dusk / overcast lighting rig (cool hemisphere ambient, one warm low sun
  * for long shadows, soft fog that fades the rim). No first-person controls.
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import {
   ACESFilmicToneMapping,
+  type Camera,
   type DirectionalLight,
   type Group,
   Object3D,
@@ -15,6 +16,7 @@ import {
   Vector3,
 } from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+import type { DebugCamera, DebugCameraSnapshot } from '../debug/scenario';
 import type { World } from '../generation/types';
 import { sampleHeight } from '../generation/grid';
 import { WorldMeshes } from './WorldMeshes';
@@ -22,6 +24,13 @@ import { WorldMeshes } from './WorldMeshes';
 interface ViewerProps {
   world: World;
   resetSignal: number;
+  initialCamera?: DebugCamera;
+  onCameraSnapshotChange?: (camera: DebugCameraSnapshot | null) => void;
+}
+
+export interface ViewerDebugHandle {
+  getCameraSnapshot: () => DebugCameraSnapshot | null;
+  setCamera: (camera: DebugCamera) => void;
 }
 
 function cameraDefaults(world: World): { target: Vector3; position: Vector3 } {
@@ -33,27 +42,139 @@ function cameraDefaults(world: World): { target: Vector3; position: Vector3 } {
   return { target, position };
 }
 
+function hasProjectionRange(camera: Camera): camera is Camera & {
+  far: number;
+  updateProjectionMatrix: () => void;
+} {
+  return 'far' in camera && 'updateProjectionMatrix' in camera;
+}
+
+function syncCameraRange(
+  world: World,
+  camera: Camera,
+  controls: React.MutableRefObject<OrbitControlsImpl | null>,
+): void {
+  if (hasProjectionRange(camera)) {
+    camera.far = world.half * 8;
+    camera.updateProjectionMatrix();
+  }
+
+  if (!controls.current) return;
+
+  const maxDistance = world.half * 3.2;
+  controls.current.maxDistance = maxDistance;
+
+  const offset = camera.position.clone().sub(controls.current.target);
+  const distance = offset.length();
+  if (distance > maxDistance && distance > 0) {
+    offset.setLength(maxDistance);
+    camera.position.copy(controls.current.target).add(offset);
+  }
+  controls.current.update();
+}
+
+function applyDebugCamera(
+  debugCamera: DebugCamera,
+  camera: Camera,
+  controls: React.MutableRefObject<OrbitControlsImpl | null>,
+): void {
+  camera.position.set(debugCamera.position.x, debugCamera.position.y, debugCamera.position.z);
+  camera.lookAt(debugCamera.target.x, debugCamera.target.y, debugCamera.target.z);
+  if (controls.current) {
+    controls.current.target.set(debugCamera.target.x, debugCamera.target.y, debugCamera.target.z);
+    controls.current.update();
+  }
+}
+
 /** Applies camera/target on mount and whenever the reset signal changes. */
 function CameraRig({
   world,
   resetSignal,
+  initialCamera,
   controls,
 }: {
   world: World;
   resetSignal: number;
+  initialCamera?: DebugCamera;
   controls: React.MutableRefObject<OrbitControlsImpl | null>;
 }): null {
   const { camera } = useThree();
+  const latestWorld = useRef(world);
+  const initialCameraRef = useRef(initialCamera);
+  const appliedInitialCamera = useRef(false);
+  latestWorld.current = world;
+
   useEffect(() => {
-    const { target, position } = cameraDefaults(world);
+    syncCameraRange(world, camera, controls);
+  }, [camera, controls, world]);
+
+  useEffect(() => {
+    if (!appliedInitialCamera.current) {
+      appliedInitialCamera.current = true;
+      if (initialCameraRef.current) {
+        applyDebugCamera(initialCameraRef.current, camera, controls);
+        syncCameraRange(latestWorld.current, camera, controls);
+        return;
+      }
+    }
+
+    const { target, position } = cameraDefaults(latestWorld.current);
     camera.position.copy(position);
     camera.lookAt(target);
     if (controls.current) {
       controls.current.target.copy(target);
-      controls.current.update();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetSignal, world]);
+    syncCameraRange(latestWorld.current, camera, controls);
+  }, [camera, controls, resetSignal]);
+  return null;
+}
+
+function CameraDebugBridge({
+  controls,
+  debugRef,
+  onCameraSnapshotChange,
+}: {
+  controls: React.MutableRefObject<OrbitControlsImpl | null>;
+  debugRef: React.ForwardedRef<ViewerDebugHandle>;
+  onCameraSnapshotChange?: (camera: DebugCameraSnapshot | null) => void;
+}): null {
+  const { camera } = useThree();
+  const getCameraSnapshot = useCallback((): DebugCameraSnapshot | null => {
+    if (!controls.current) return null;
+    const { position } = camera;
+    const { target } = controls.current;
+    return {
+      position: { x: position.x, y: position.y, z: position.z },
+      target: { x: target.x, y: target.y, z: target.z },
+      distance: position.distanceTo(target),
+    };
+  }, [camera, controls]);
+
+  useEffect(() => {
+    const control = controls.current;
+    if (!control) {
+      onCameraSnapshotChange?.(null);
+      return undefined;
+    }
+
+    const notify = () => onCameraSnapshotChange?.(getCameraSnapshot());
+    notify();
+    control.addEventListener('change', notify);
+    return () => control.removeEventListener('change', notify);
+  }, [controls, getCameraSnapshot, onCameraSnapshotChange]);
+
+  useImperativeHandle(
+    debugRef,
+    () => ({
+      getCameraSnapshot,
+      setCamera: (debugCamera) => {
+        applyDebugCamera(debugCamera, camera, controls);
+        onCameraSnapshotChange?.(getCameraSnapshot());
+      },
+    }),
+    [getCameraSnapshot, camera, controls, onCameraSnapshotChange],
+  );
+
   return null;
 }
 
@@ -101,7 +222,10 @@ function Sun({ world }: { world: World }): JSX.Element {
   );
 }
 
-export function Viewer({ world, resetSignal }: ViewerProps): JSX.Element {
+export const Viewer = forwardRef<ViewerDebugHandle, ViewerProps>(function Viewer(
+  { world, resetSignal, initialCamera, onCameraSnapshotChange },
+  ref,
+): JSX.Element {
   const controls = useRef<OrbitControlsImpl | null>(null);
   const groupRef = useRef<Group>(null);
   const fogColor = '#aab3bd';
@@ -137,7 +261,17 @@ export function Viewer({ world, resetSignal }: ViewerProps): JSX.Element {
         <WorldMeshes world={world} />
       </group>
 
-      <CameraRig world={world} resetSignal={resetSignal} controls={controls} />
+      <CameraRig
+        world={world}
+        resetSignal={resetSignal}
+        initialCamera={initialCamera}
+        controls={controls}
+      />
+      <CameraDebugBridge
+        controls={controls}
+        debugRef={ref}
+        onCameraSnapshotChange={onCameraSnapshotChange}
+      />
       <OrbitControls
         ref={controls}
         makeDefault
@@ -147,8 +281,7 @@ export function Viewer({ world, resetSignal }: ViewerProps): JSX.Element {
         maxDistance={world.half * 3.2}
         minPolarAngle={0.12}
         maxPolarAngle={1.45}
-        target={[world.center.x, 0, world.center.z]}
       />
     </Canvas>
   );
-}
+});
