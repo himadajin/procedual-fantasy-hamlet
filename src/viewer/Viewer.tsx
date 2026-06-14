@@ -8,6 +8,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import {
   ACESFilmicToneMapping,
+  type Camera,
   type DirectionalLight,
   type Group,
   Object3D,
@@ -33,6 +34,37 @@ function cameraDefaults(world: World): { target: Vector3; position: Vector3 } {
   return { target, position };
 }
 
+function hasProjectionRange(camera: Camera): camera is Camera & {
+  far: number;
+  updateProjectionMatrix: () => void;
+} {
+  return 'far' in camera && 'updateProjectionMatrix' in camera;
+}
+
+function syncCameraRange(
+  world: World,
+  camera: Camera,
+  controls: React.MutableRefObject<OrbitControlsImpl | null>,
+): void {
+  if (hasProjectionRange(camera)) {
+    camera.far = world.half * 8;
+    camera.updateProjectionMatrix();
+  }
+
+  if (!controls.current) return;
+
+  const maxDistance = world.half * 3.2;
+  controls.current.maxDistance = maxDistance;
+
+  const offset = camera.position.clone().sub(controls.current.target);
+  const distance = offset.length();
+  if (distance > maxDistance && distance > 0) {
+    offset.setLength(maxDistance);
+    camera.position.copy(controls.current.target).add(offset);
+  }
+  controls.current.update();
+}
+
 /** Applies camera/target on mount and whenever the reset signal changes. */
 function CameraRig({
   world,
@@ -44,16 +76,22 @@ function CameraRig({
   controls: React.MutableRefObject<OrbitControlsImpl | null>;
 }): null {
   const { camera } = useThree();
+  const latestWorld = useRef(world);
+  latestWorld.current = world;
+
   useEffect(() => {
-    const { target, position } = cameraDefaults(world);
+    syncCameraRange(world, camera, controls);
+  }, [camera, controls, world]);
+
+  useEffect(() => {
+    const { target, position } = cameraDefaults(latestWorld.current);
     camera.position.copy(position);
     camera.lookAt(target);
     if (controls.current) {
       controls.current.target.copy(target);
-      controls.current.update();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetSignal, world]);
+    syncCameraRange(latestWorld.current, camera, controls);
+  }, [camera, controls, resetSignal]);
   return null;
 }
 
@@ -147,7 +185,6 @@ export function Viewer({ world, resetSignal }: ViewerProps): JSX.Element {
         maxDistance={world.half * 3.2}
         minPolarAngle={0.12}
         maxPolarAngle={1.45}
-        target={[world.center.x, 0, world.center.z]}
       />
     </Canvas>
   );
