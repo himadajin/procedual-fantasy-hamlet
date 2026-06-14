@@ -3,7 +3,7 @@ import { generateWorld } from './generate';
 import { DEFAULT_PARAMS, DEFAULT_SEED, type WorldParams } from './params';
 import { Rng } from './rng';
 import { generateTerrain } from './terrain';
-import { heightStatsInRadius } from './grid';
+import { clampInt, heightStatsInRadius, idx, worldToCellF } from './grid';
 import { distanceToRoadGraphClearance } from './roads';
 
 function fingerprint(world: ReturnType<typeof generateWorld>): string {
@@ -89,6 +89,31 @@ function averageInnerRelief(params: WorldParams): number {
     }
   }
   return total / Math.max(1, count);
+}
+
+function actualWaterCoverage(world: ReturnType<typeof generateWorld>): number {
+  let wet = 0;
+  for (const cell of world.water.mask) {
+    if (cell) wet += 1;
+  }
+  return wet / world.water.mask.length;
+}
+
+function actualTerrainStats(world: ReturnType<typeof generateWorld>): { min: number; max: number } {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const h of world.terrain.heights) {
+    if (h < min) min = h;
+    if (h > max) max = h;
+  }
+  return { min, max };
+}
+
+function isWaterAt(world: ReturnType<typeof generateWorld>, p: { x: number; z: number }): boolean {
+  const f = worldToCellF(world.terrain, p.x, p.z);
+  const i = clampInt(Math.round(f.fi), 0, world.terrain.size - 1);
+  const j = clampInt(Math.round(f.fj), 0, world.terrain.size - 1);
+  return world.water.mask[idx(world.terrain.size, i, j)] === 1;
 }
 
 describe('deterministic generation', () => {
@@ -243,6 +268,71 @@ describe('parameters actually change the world', () => {
     const dry = generateWorld({ seed: 'x', params: { ...base, waterPresence: 0 } });
     const wet = generateWorld({ seed: 'x', params: { ...base, waterPresence: 100 } });
     expect(wet.water.coverage).toBeGreaterThan(dry.water.coverage);
+  });
+
+  it('does not make moats the default result for ordinary fortified wet worlds', () => {
+    const ordinary = generateWorld({
+      seed: 'riverhold',
+      params: { ...base, defensePressure: 70, waterPresence: 70 },
+    });
+
+    expect(ordinary.summary.hasWalls).toBe(true);
+    expect(ordinary.summary.hasMoat).toBe(false);
+  });
+
+  it('creates advanced moats only when strong defense, water and terrain align', () => {
+    const moated = generateWorld({
+      seed: 'riverhold',
+      params: {
+        ...base,
+        worldScale: 82,
+        defensePressure: 90,
+        waterPresence: 85,
+        terrainRuggedness: 45,
+      },
+    });
+
+    expect(moated.summary.hasMoat).toBe(true);
+    expect(moated.water.hasMoat).toBe(true);
+    expect(moated.water.kinds).toContain('moat');
+    expect(moated.water.coverage).toBeCloseTo(actualWaterCoverage(moated), 5);
+
+    const stats = actualTerrainStats(moated);
+    expect(moated.terrain.minHeight).toBeCloseTo(stats.min, 5);
+    expect(moated.terrain.maxHeight).toBeCloseTo(stats.max, 5);
+  });
+
+  it('keeps gate causeways readable when a moat is present', () => {
+    const world = generateWorld({
+      seed: 'riverhold',
+      params: {
+        ...base,
+        worldScale: 82,
+        defensePressure: 90,
+        waterPresence: 85,
+        terrainRuggedness: 45,
+      },
+    });
+
+    expect(world.summary.hasMoat).toBe(true);
+    for (const gate of world.gates) {
+      const outward = Math.atan2(
+        gate.position.z - world.center.z,
+        gate.position.x - world.center.x,
+      );
+      let wetSamples = 0;
+      let samples = 0;
+      for (let offset = 3; offset <= 18; offset += 3) {
+        const p = {
+          x: gate.position.x + Math.cos(outward) * offset,
+          z: gate.position.z + Math.sin(outward) * offset,
+        };
+        if (isWaterAt(world, p)) wetSamples += 1;
+        samples += 1;
+      }
+
+      expect(wetSamples).toBeLessThan(samples / 2);
+    }
   });
 
   it('water and open space produce shore plants and low grass', () => {
