@@ -9,7 +9,7 @@ import type {
   World,
   WorldSummary,
 } from '../../generation/types';
-import { buildRoadGeometry } from './landscape';
+import { buildRoadGeometry, buildWaterGeometry } from './landscape';
 
 function flatTerrain(): TerrainData {
   return {
@@ -277,5 +277,14 @@ describe('landscape road meshing', () => {
     const count = triangleCount(waterWorld(DEFAULT_PARAMS));
 
     expect(count).toBeGreaterThan(90);
+  });
+});
+
+describe('landscape water meshing', () => {
+  it('adds low-poly water accents beyond the base water surface', () => {
+    const geometry = buildWaterGeometry(waterWorld({ ...DEFAULT_PARAMS, waterPresence: 85 }));
+
+    expect(geometry).not.toBeNull();
+    expect(geometry!.index!.count / 3).toBeGreaterThan(18);
   });
 });
