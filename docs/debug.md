@@ -52,7 +52,18 @@ window.__hamletDebug.setCamera({
 - `camera`: current camera `position`, orbit `target`, and `distance`, or `null`
   before the viewer is ready.
 - `scenarioUrl`: a full URL for the current draft seed, draft params and camera.
-- `world`: the currently rendered world metadata and summary.
+- `world`: the currently rendered world metadata, summary and debug metrics.
+
+`world.metrics` is a compact first-pass diagnostic summary. It intentionally
+does not expose every generated object or a full generation trace.
+
+- `terrain`: `minHeight`, `maxHeight`, `heightRange`.
+- `water`: `coverage`, kind counts, `hasMoat`, `riverPointCount`.
+- `roads`: node, edge, plaza, bridge-edge and clearance counts, plus
+  `settlementRadius`.
+- `structures`: building count, building role counts, wall segment count, tower
+  count, gate count and bridge count.
+- `vegetation`: plant count and plant kind counts.
 
 `scenarioUrl()` returns the same full scenario URL string without the rest of the
 state payload.
@@ -81,6 +92,10 @@ Use this DOM state in the in-app Browser when checking camera preservation,
 parameter changes, generated summaries, or the current scenario URL. Camera
 state updates after orbit-control changes, explicit debug `setCamera()` calls,
 and camera resets.
+
+Use `world.metrics` as the first debugging foothold for generation problems:
+for example, check `water.coverage` and `roads.bridgeEdgeCount` before judging a
+bridge issue visually, or compare `terrain.heightRange` when testing ruggedness.
 
 ## Expected Use
 

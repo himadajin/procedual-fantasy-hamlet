@@ -12,6 +12,7 @@ import {
   type DebugCamera,
   type DebugCameraSnapshot,
 } from './debug/scenario';
+import { buildWorldMetrics, type DebugWorldMetrics } from './debug/metrics';
 import { generateWorld } from './generation/generate';
 import type { WorldParams } from './generation/params';
 import type { World } from './generation/types';
@@ -29,6 +30,7 @@ interface HamletDebugState {
     half: number;
     center: World['center'];
     summary: World['summary'];
+    metrics: DebugWorldMetrics;
   };
 }
 
@@ -133,6 +135,7 @@ export default function App(): JSX.Element {
         half: world.half,
         center: world.center,
         summary: world.summary,
+        metrics: buildWorldMetrics(world),
       },
     }),
     [cameraSnapshot, params, seed, world],
