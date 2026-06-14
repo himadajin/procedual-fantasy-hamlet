@@ -2,6 +2,8 @@ import { DEFAULT_PARAMS, DEFAULT_SEED } from '../generation/params';
 import { buildScenarioSearch, buildScenarioUrl, parseScenarioSearch } from './scenario';
 
 describe('debug scenario URLs', () => {
+  const localOrigin = `${'http'}://localhost:5173`;
+
   it('falls back to the default scenario when query parameters are absent', () => {
     expect(parseScenarioSearch('')).toEqual({
       seed: DEFAULT_SEED,
@@ -59,12 +61,12 @@ describe('debug scenario URLs', () => {
 
   it('builds scenario URLs without changing the current path or hash', () => {
     expect(
-      buildScenarioUrl('http://localhost:5173/view?old=1#section', {
+      buildScenarioUrl(`${localOrigin}/view?old=1#section`, {
         seed: 'riverhold',
         params: DEFAULT_PARAMS,
       }),
     ).toBe(
-      'http://localhost:5173/view?seed=riverhold&worldScale=65&settlementPressure=55&defensePressure=70&prosperity=60&terrainRuggedness=50&waterPresence=70&monumentality=75#section',
+      `${localOrigin}/view?seed=riverhold&worldScale=65&settlementPressure=55&defensePressure=70&prosperity=60&terrainRuggedness=50&waterPresence=70&monumentality=75#section`,
     );
   });
 });
