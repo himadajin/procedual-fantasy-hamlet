@@ -64,9 +64,12 @@ export function WorldMeshes({ world }: { world: World }): JSX.Element {
           <meshStandardMaterial
             vertexColors
             transparent
-            opacity={0.86}
-            roughness={0.22}
-            metalness={0.1}
+            opacity={0.96}
+            roughness={0.16}
+            metalness={0}
+            depthWrite={false}
+            emissive="#183746"
+            emissiveIntensity={0.24}
           />
         </mesh>
       )}

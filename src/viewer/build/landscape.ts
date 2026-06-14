@@ -22,6 +22,11 @@ function smooth01(e0: number, e1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+function hash2(a: number, b: number, salt: number): number {
+  const x = Math.sin((a * 127.1 + b * 311.7 + salt * 74.7) * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
 /** Terrain surface with smooth normals and height/slope/shore vertex colors. */
 export function buildTerrainGeometry(world: World): BufferGeometry {
   const t = world.terrain;
@@ -98,7 +103,9 @@ function terrainColor(h: number, heightNorm: number, slope: number, level: numbe
   // Darker submerged bed below the water line.
   if (h < level) {
     const depth = smooth01(0, 4, level - h);
-    c = mix(mix(c, PALETTE.soil, 0.6), shade(PALETTE.soil, 0.6), depth);
+    const shallowBed = mix(PALETTE.sand, PALETTE.waterShore, 0.34);
+    const deepBed = mix(PALETTE.soil, PALETTE.waterDeep, 0.48);
+    c = mix(shallowBed, deepBed, depth);
   }
   return c;
 }
@@ -109,11 +116,11 @@ export function buildWaterGeometry(world: World): BufferGeometry | null {
   const n = t.size;
   const level = world.water.level;
   const m = new Mesher();
-  const surfaceY = level + 0.04;
+  const surfaceY = level + 0.08;
   let any = false;
   for (let j = 0; j < n - 1; j++) {
     for (let i = 0; i < n - 1; i++) {
-      // A water quad if all four corners are flagged water.
+      // A water quad if any corner is flagged water; this keeps narrow rivers continuous.
       const k00 = world.water.mask[idx(n, i, j)];
       const k10 = world.water.mask[idx(n, i + 1, j)];
       const k01 = world.water.mask[idx(n, i, j + 1)];
@@ -124,13 +131,225 @@ export function buildWaterGeometry(world: World): BufferGeometry | null {
       const z0 = -t.half + j * t.cellSize;
       const x1 = x0 + t.cellSize;
       const z1 = z0 + t.cellSize;
-      const depth = level - t.heights[idx(n, i, j)];
-      const col = mix(PALETTE.waterShallow, PALETTE.waterDeep, smooth01(0, 5, depth));
+      const depth = waterQuadDepth(world, i, j);
+      const edge = isWaterEdgeCell(world, i, j) ? 1 : 0;
+      const depthColor = mix(PALETTE.waterShallow, PALETTE.waterDeep, smooth01(0, 6, depth));
+      const col = mix(depthColor, PALETTE.waterShore, edge * 0.22);
       m.quad(x0, surfaceY, z0, x1, surfaceY, z0, x1, surfaceY, z1, x0, surfaceY, z1, col);
     }
   }
+  buildWaterSurfaceRims(m, world, surfaceY + 0.075);
+  buildRiverFlowMarks(m, world, surfaceY + 0.06);
+  buildStillWaterGlints(m, world, surfaceY + 0.07);
   if (!any) return null;
   return m.toGeometry();
+}
+
+function waterQuadDepth(world: World, i: number, j: number): number {
+  const t = world.terrain;
+  const n = t.size;
+  let depth = 0;
+  let count = 0;
+  for (const [di, dj] of [
+    [0, 0],
+    [1, 0],
+    [0, 1],
+    [1, 1],
+  ] as const) {
+    const ii = i + di;
+    const jj = j + dj;
+    const k = idx(n, ii, jj);
+    if (!world.water.mask[k]) continue;
+    depth += Math.max(0, world.water.level - t.heights[k]);
+    count++;
+  }
+  return count > 0 ? depth / count : 0;
+}
+
+function isWaterEdgeCell(world: World, i: number, j: number): boolean {
+  return (
+    !isWaterCell(world, i - 1, j) ||
+    !isWaterCell(world, i + 1, j) ||
+    !isWaterCell(world, i, j - 1) ||
+    !isWaterCell(world, i, j + 1)
+  );
+}
+
+function waterAt(world: World, p: Vec2): boolean {
+  const t = world.terrain;
+  const i = Math.round((p.x + t.half) / t.cellSize);
+  const j = Math.round((p.z + t.half) / t.cellSize);
+  return isWaterCell(world, i, j);
+}
+
+function addSurfaceMark(
+  m: Mesher,
+  cx: number,
+  y: number,
+  cz: number,
+  ux: number,
+  uz: number,
+  length: number,
+  width: number,
+  color: RGB,
+): void {
+  const len = Math.hypot(ux, uz) || 1;
+  const ax = ux / len;
+  const az = uz / len;
+  const nx = -az;
+  const nz = ax;
+  const hl = length / 2;
+  const hw = width / 2;
+  m.quad(
+    cx - ax * hl - nx * hw,
+    y,
+    cz - az * hl - nz * hw,
+    cx + ax * hl - nx * hw,
+    y,
+    cz + az * hl - nz * hw,
+    cx + ax * hl + nx * hw,
+    y,
+    cz + az * hl + nz * hw,
+    cx - ax * hl + nx * hw,
+    y,
+    cz - az * hl + nz * hw,
+    color,
+  );
+}
+
+function buildRiverFlowMarks(m: Mesher, world: World, y: number): void {
+  const pts = world.water.riverPath;
+  if (pts.length < 2) return;
+  const color = mix(PALETTE.waterHighlight, PALETTE.waterShore, 0.28);
+  const spacing = Math.max(3.2, world.terrain.cellSize * 0.72);
+  const width = Math.max(0.08, world.terrain.cellSize * 0.035);
+  let carried = 0;
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.1) continue;
+    const ux = dx / len;
+    const uz = dz / len;
+    const nx = -uz;
+    const nz = ux;
+    for (let d = spacing - carried; d < len; d += spacing) {
+      const h = hash2(i, Math.floor(d * 4), 19);
+      const lateral = (h - 0.5) * world.terrain.cellSize * 0.9;
+      const cx = a.x + ux * d + nx * lateral;
+      const cz = a.z + uz * d + nz * lateral;
+      if (!waterAt(world, { x: cx, z: cz })) continue;
+      const markLength = world.terrain.cellSize * (0.42 + hash2(i, Math.floor(d * 3), 41) * 0.28);
+      addSurfaceMark(m, cx, y, cz, ux, uz, markLength, width, shade(color, 0.88 + h * 0.16));
+    }
+    carried = (carried + len) % spacing;
+  }
+}
+
+function buildWaterSurfaceRims(m: Mesher, world: World, y: number): void {
+  const t = world.terrain;
+  const n = t.size;
+  const c = t.cellSize;
+  const rimWidth = Math.max(0.16, Math.min(0.48, c * 0.08));
+  const color = mix(PALETTE.waterHighlight, PALETTE.waterShore, 0.36);
+
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      if (!isWaterCell(world, i, j)) continue;
+      const x0 = -t.half + i * c;
+      const z0 = -t.half + j * c;
+      const x1 = x0 + c;
+      const z1 = z0 + c;
+      const shadeK = 0.82 + hash2(i, j, 117) * 0.14;
+
+      if (!isWaterCell(world, i - 1, j)) {
+        addSurfaceMark(
+          m,
+          x0 + rimWidth * 0.55,
+          y,
+          (z0 + z1) / 2,
+          0,
+          1,
+          c,
+          rimWidth,
+          shade(color, shadeK),
+        );
+      }
+      if (!isWaterCell(world, i + 1, j)) {
+        addSurfaceMark(
+          m,
+          x1 - rimWidth * 0.55,
+          y,
+          (z0 + z1) / 2,
+          0,
+          1,
+          c,
+          rimWidth,
+          shade(color, shadeK),
+        );
+      }
+      if (!isWaterCell(world, i, j - 1)) {
+        addSurfaceMark(
+          m,
+          (x0 + x1) / 2,
+          y,
+          z0 + rimWidth * 0.55,
+          1,
+          0,
+          c,
+          rimWidth,
+          shade(color, shadeK),
+        );
+      }
+      if (!isWaterCell(world, i, j + 1)) {
+        addSurfaceMark(
+          m,
+          (x0 + x1) / 2,
+          y,
+          z1 - rimWidth * 0.55,
+          1,
+          0,
+          c,
+          rimWidth,
+          shade(color, shadeK),
+        );
+      }
+    }
+  }
+}
+
+function buildStillWaterGlints(m: Mesher, world: World, y: number): void {
+  const t = world.terrain;
+  const n = t.size;
+  const color = mix(PALETTE.waterHighlight, PALETTE.waterShallow, 0.34);
+  const density = world.water.hasMoat ? 0.18 : 0.11;
+  const length = Math.max(0.65, t.cellSize * 0.32);
+  const width = Math.max(0.07, t.cellSize * 0.028);
+
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      if (!isWaterCell(world, i, j) || !isWaterEdgeCell(world, i, j)) continue;
+      const h = hash2(i, j, 83);
+      if (h > density) continue;
+      const x = -t.half + (i + 0.5 + (hash2(i, j, 84) - 0.5) * 0.38) * t.cellSize;
+      const z = -t.half + (j + 0.5 + (hash2(i, j, 85) - 0.5) * 0.38) * t.cellSize;
+      const angle = hash2(i, j, 86) * Math.PI;
+      addSurfaceMark(
+        m,
+        x,
+        y,
+        z,
+        Math.cos(angle),
+        Math.sin(angle),
+        length * (0.75 + h * 0.5),
+        width,
+        shade(color, 0.86 + h * 0.18),
+      );
+    }
+  }
 }
 
 /** Road, plaza, access and shoreline pavings, hugging the terrain a little above it. */
@@ -178,6 +397,7 @@ function buildShoreline(
   const sandColor = mix(PALETTE.sand, PALETTE.soil, 0.42);
   const stoneColor = mix(PALETTE.stoneDark, PALETTE.rock, 0.25 + prosperity * 0.18);
   const wetColor = mix(PALETTE.soil, PALETTE.waterShallow, 0.08 + waterPresence * 0.08);
+  const rimColor = mix(PALETTE.waterShore, PALETTE.sand, 0.3 + prosperity * 0.14);
   const density = 0.42 + waterPresence * 0.18;
   let any = false;
 
@@ -191,12 +411,33 @@ function buildShoreline(
       const z1 = z0 + c;
       const edgeColor = (i + j) % 3 === 0 && prosperity > 0.42 ? stoneColor : sandColor;
 
+      if (!isWaterCell(world, i - 1, j)) {
+        waterEdgeRim(m, world, x0 - band * 0.18, (z0 + z1) / 2, 0, c, band * 0.42, rimColor);
+        any = true;
+      }
       if (!isWaterCell(world, i - 1, j) && shoreHash(i, j, 0) < density) {
         shorePatch(m, t, x0 - band * 0.45, (z0 + z1) / 2, 0, c, band, lift, edgeColor, i, j, 0);
         any = true;
       }
+      if (!isWaterCell(world, i + 1, j)) {
+        waterEdgeRim(m, world, x1 + band * 0.18, (z0 + z1) / 2, 0, c, band * 0.42, rimColor);
+        any = true;
+      }
       if (!isWaterCell(world, i + 1, j) && shoreHash(i, j, 1) < density) {
         shorePatch(m, t, x1 + band * 0.45, (z0 + z1) / 2, 0, c, band, lift, edgeColor, i, j, 1);
+        any = true;
+      }
+      if (!isWaterCell(world, i, j - 1)) {
+        waterEdgeRim(
+          m,
+          world,
+          (x0 + x1) / 2,
+          z0 - band * 0.18,
+          Math.PI / 2,
+          c,
+          band * 0.42,
+          rimColor,
+        );
         any = true;
       }
       if (!isWaterCell(world, i, j - 1) && shoreHash(i, j, 2) < density) {
@@ -213,6 +454,19 @@ function buildShoreline(
           i,
           j,
           2,
+        );
+        any = true;
+      }
+      if (!isWaterCell(world, i, j + 1)) {
+        waterEdgeRim(
+          m,
+          world,
+          (x0 + x1) / 2,
+          z1 + band * 0.18,
+          Math.PI / 2,
+          c,
+          band * 0.42,
+          rimColor,
         );
         any = true;
       }
@@ -239,8 +493,33 @@ function buildShoreline(
 }
 
 function shoreHash(i: number, j: number, salt: number): number {
-  const x = Math.sin((i * 127.1 + j * 311.7 + salt * 74.7) * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
+  return hash2(i, j, salt);
+}
+
+function waterEdgeRim(
+  m: Mesher,
+  world: World,
+  centerX: number,
+  centerZ: number,
+  rot: number,
+  length: number,
+  width: number,
+  color: RGB,
+): void {
+  const y = world.water.level + 0.18;
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  const hx = length / 2;
+  const hz = width / 2;
+  const p = (lx: number, lz: number): Vec2 => ({
+    x: centerX + lx * cos + lz * sin,
+    z: centerZ - lx * sin + lz * cos,
+  });
+  const a = p(-hx, -hz);
+  const b = p(hx, -hz);
+  const c = p(hx, hz);
+  const d = p(-hx, hz);
+  m.quad(a.x, y, a.z, b.x, y, b.z, c.x, y, c.z, d.x, y, d.z, color);
 }
 
 function shorePatch(
