@@ -3,7 +3,7 @@
  * fixed dusk / overcast lighting rig (cool hemisphere ambient, one warm low sun
  * for long shadows, soft fog that fades the rim). No first-person controls.
  */
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import {
@@ -25,6 +25,7 @@ interface ViewerProps {
   world: World;
   resetSignal: number;
   initialCamera?: DebugCamera;
+  onCameraSnapshotChange?: (camera: DebugCameraSnapshot | null) => void;
 }
 
 export interface ViewerDebugHandle {
@@ -131,30 +132,47 @@ function CameraRig({
 function CameraDebugBridge({
   controls,
   debugRef,
+  onCameraSnapshotChange,
 }: {
   controls: React.MutableRefObject<OrbitControlsImpl | null>;
   debugRef: React.ForwardedRef<ViewerDebugHandle>;
+  onCameraSnapshotChange?: (camera: DebugCameraSnapshot | null) => void;
 }): null {
   const { camera } = useThree();
+  const getCameraSnapshot = useCallback((): DebugCameraSnapshot | null => {
+    if (!controls.current) return null;
+    const { position } = camera;
+    const { target } = controls.current;
+    return {
+      position: { x: position.x, y: position.y, z: position.z },
+      target: { x: target.x, y: target.y, z: target.z },
+      distance: position.distanceTo(target),
+    };
+  }, [camera, controls]);
+
+  useEffect(() => {
+    const control = controls.current;
+    if (!control) {
+      onCameraSnapshotChange?.(null);
+      return undefined;
+    }
+
+    const notify = () => onCameraSnapshotChange?.(getCameraSnapshot());
+    notify();
+    control.addEventListener('change', notify);
+    return () => control.removeEventListener('change', notify);
+  }, [controls, getCameraSnapshot, onCameraSnapshotChange]);
 
   useImperativeHandle(
     debugRef,
     () => ({
-      getCameraSnapshot: () => {
-        if (!controls.current) return null;
-        const { position } = camera;
-        const { target } = controls.current;
-        return {
-          position: { x: position.x, y: position.y, z: position.z },
-          target: { x: target.x, y: target.y, z: target.z },
-          distance: position.distanceTo(target),
-        };
-      },
+      getCameraSnapshot,
       setCamera: (debugCamera) => {
         applyDebugCamera(debugCamera, camera, controls);
+        onCameraSnapshotChange?.(getCameraSnapshot());
       },
     }),
-    [camera, controls],
+    [getCameraSnapshot, camera, controls, onCameraSnapshotChange],
   );
 
   return null;
@@ -205,7 +223,7 @@ function Sun({ world }: { world: World }): JSX.Element {
 }
 
 export const Viewer = forwardRef<ViewerDebugHandle, ViewerProps>(function Viewer(
-  { world, resetSignal, initialCamera },
+  { world, resetSignal, initialCamera, onCameraSnapshotChange },
   ref,
 ): JSX.Element {
   const controls = useRef<OrbitControlsImpl | null>(null);
@@ -249,7 +267,11 @@ export const Viewer = forwardRef<ViewerDebugHandle, ViewerProps>(function Viewer
         initialCamera={initialCamera}
         controls={controls}
       />
-      <CameraDebugBridge controls={controls} debugRef={ref} />
+      <CameraDebugBridge
+        controls={controls}
+        debugRef={ref}
+        onCameraSnapshotChange={onCameraSnapshotChange}
+      />
       <OrbitControls
         ref={controls}
         makeDefault

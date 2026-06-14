@@ -44,6 +44,30 @@ declare global {
   }
 }
 
+function sameCameraSnapshot(a: DebugCameraSnapshot | null, b: DebugCameraSnapshot | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const valuesA = [
+    a.position.x,
+    a.position.y,
+    a.position.z,
+    a.target.x,
+    a.target.y,
+    a.target.z,
+    a.distance,
+  ];
+  const valuesB = [
+    b.position.x,
+    b.position.y,
+    b.position.z,
+    b.target.x,
+    b.target.y,
+    b.target.z,
+    b.distance,
+  ];
+  return valuesA.every((value, index) => Math.abs(value - valuesB[index]) < 0.001);
+}
+
 function randomSeed(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let s = '';
@@ -63,6 +87,7 @@ export default function App(): JSX.Element {
   const [world, setWorld] = useState<World>(() =>
     generateWorld({ seed: initialScenario.seed, params: initialScenario.params }),
   );
+  const [cameraSnapshot, setCameraSnapshot] = useState<DebugCameraSnapshot | null>(null);
   const [generating, setGenerating] = useState(false);
   const [resetSignal, setResetSignal] = useState(0);
   const pending = useRef(false);
@@ -88,6 +113,30 @@ export default function App(): JSX.Element {
 
   const randomize = useCallback(() => setSeed(randomSeed()), []);
   const resetCamera = useCallback(() => setResetSignal((n) => n + 1), []);
+  const updateCameraSnapshot = useCallback((camera: DebugCameraSnapshot | null) => {
+    setCameraSnapshot((current) => (sameCameraSnapshot(current, camera) ? current : camera));
+  }, []);
+
+  const debugState = useMemo<HamletDebugState>(
+    () => ({
+      seed,
+      params,
+      camera: cameraSnapshot,
+      scenarioUrl: buildScenarioUrl(window.location.href, {
+        seed,
+        params,
+        camera: cameraSnapshot ?? undefined,
+      }),
+      world: {
+        seed: world.seed,
+        seedValue: world.seedValue,
+        half: world.half,
+        center: world.center,
+        summary: world.summary,
+      },
+    }),
+    [cameraSnapshot, params, seed, world],
+  );
 
   // Keyboard nicety: "g" regenerates, "r" resets the camera.
   useEffect(() => {
@@ -109,19 +158,18 @@ export default function App(): JSX.Element {
       });
 
     window.__hamletDebug = {
-      getState: () => ({
-        seed,
-        params,
-        camera: viewerDebug.current?.getCameraSnapshot() ?? null,
-        scenarioUrl: getScenarioUrl(),
-        world: {
-          seed: world.seed,
-          seedValue: world.seedValue,
-          half: world.half,
-          center: world.center,
-          summary: world.summary,
-        },
-      }),
+      getState: () => {
+        const camera = viewerDebug.current?.getCameraSnapshot() ?? debugState.camera;
+        return {
+          ...debugState,
+          camera,
+          scenarioUrl: buildScenarioUrl(window.location.href, {
+            seed,
+            params,
+            camera: camera ?? undefined,
+          }),
+        };
+      },
       scenarioUrl: getScenarioUrl,
       setCamera: (camera) => viewerDebug.current?.setCamera(camera),
     };
@@ -129,7 +177,7 @@ export default function App(): JSX.Element {
     return () => {
       delete window.__hamletDebug;
     };
-  }, [params, seed, world]);
+  }, [debugState, params, seed]);
 
   return (
     <div className="app">
@@ -139,8 +187,13 @@ export default function App(): JSX.Element {
           world={world}
           resetSignal={resetSignal}
           initialCamera={initialScenario.camera}
+          onCameraSnapshotChange={updateCameraSnapshot}
         />
       </div>
+
+      <output className="debug-state" data-testid="hamlet-debug-state" aria-hidden="true">
+        {JSON.stringify(debugState)}
+      </output>
 
       {generating && (
         <div className="generating-badge" role="status" aria-live="polite">

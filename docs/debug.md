@@ -60,10 +60,34 @@ state payload.
 `setCamera(camera)` applies a camera position and orbit target without
 regenerating the world.
 
+## DOM-Readable Debug State
+
+The same debug payload is also projected into the DOM for browser automation
+surfaces that cannot read custom page globals:
+
+```html
+<output data-testid="hamlet-debug-state">...</output>
+```
+
+The element is visually hidden but remains queryable from DOM tools. Its
+`textContent` is JSON with the same shape as `window.__hamletDebug.getState()`:
+
+```ts
+const raw = document.querySelector('[data-testid="hamlet-debug-state"]')?.textContent;
+const state = raw ? JSON.parse(raw) : null;
+```
+
+Use this DOM state in the in-app Browser when checking camera preservation,
+parameter changes, generated summaries, or the current scenario URL. Camera
+state updates after orbit-control changes, explicit debug `setCamera()` calls,
+and camera resets.
+
 ## Expected Use
 
 - Use scenario URLs to open a precise seed/parameter/camera state.
 - Use `getState()` to verify camera preservation, current parameter values and
   generated-world summary without relying on screenshots.
+- Use `[data-testid="hamlet-debug-state"]` for the same checks when the browser
+  automation environment cannot access `window.__hamletDebug`.
 - Use `scenarioUrl()` to capture a failing visual/spatial state for later
   reproduction.

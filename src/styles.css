@@ -45,6 +45,17 @@ body,
   inset: 0;
 }
 
+.debug-state {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 /* ---- Viewer fills the screen; it is always the star ---- */
 .viewer-layer {
   position: absolute;
