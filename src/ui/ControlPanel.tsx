@@ -23,7 +23,7 @@ interface ControlPanelProps {
 }
 
 export function ControlPanel(props: ControlPanelProps): JSX.Element {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const loadLabel = props.summary.complexity.replace(/\s*\(.*/, '');
   const chips = [
     `${props.summary.buildingCount} structures`,
