@@ -15,7 +15,7 @@
 import { ValueNoise2D } from './noise';
 import { Rng } from './rng';
 import { frac, type WorldParams } from './params';
-import { cellToWorld, distance, idx, sampleHeight, worldToCellF, clampInt, lerp } from './grid';
+import { cellToWorld, clampInt, distance, idx, lerp, sampleHeight, smoothstep } from './grid';
 import type { Gate, TerrainData, Tower, Vec2, WallSegment, WaterData } from './types';
 
 export interface DefenseResult {
@@ -196,13 +196,15 @@ export function generateDefenses(
     }
   }
 
-  // Moat: carve an outer ring of water when defense and water are both strong.
+  // Moat: an advanced defensive waterwork, only when defense, water and terrain align.
   let hasMoat = false;
-  if (fullRing && waterPresence > 0.45) {
-    hasMoat = carveMoat(terrain, water, center, enclosure, enclosureRadius, waterPresence);
+  if (fullRing && shouldHaveMoat(rng, params, terrain, water, center, enclosure, gates)) {
+    hasMoat = carveMoat(terrain, water, center, enclosure, gates, waterPresence);
     if (hasMoat) {
       water.hasMoat = true;
       if (!water.kinds.includes('moat')) water.kinds.push('moat');
+      refreshTerrainStats(terrain);
+      refreshWaterCoverage(water);
     }
   }
 
@@ -230,37 +232,182 @@ function makeTower(
   };
 }
 
-/** Carve a moat ring just outside the wall. Returns whether one was made. */
+function clamp01(v: number): number {
+  return clampInt(v, 0, 1);
+}
+
+function pointSegmentDistance(p: Vec2, a: Vec2, b: Vec2): number {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz || 1e-6;
+  const t = clamp01(((p.x - a.x) * abx + (p.z - a.z) * abz) / len2);
+  const x = a.x + abx * t;
+  const z = a.z + abz * t;
+  return Math.hypot(p.x - x, p.z - z);
+}
+
+function distanceToBoundary(p: Vec2, enclosure: Vec2[]): number {
+  let best = Infinity;
+  for (let i = 0; i < enclosure.length; i++) {
+    best = Math.min(
+      best,
+      pointSegmentDistance(p, enclosure[i], enclosure[(i + 1) % enclosure.length]),
+    );
+  }
+  return best;
+}
+
+function waterNearPoint(terrain: TerrainData, water: WaterData, p: Vec2, radius: number): boolean {
+  const ci = clampInt(Math.round((p.x + terrain.half) / terrain.cellSize), 0, terrain.size - 1);
+  const cj = clampInt(Math.round((p.z + terrain.half) / terrain.cellSize), 0, terrain.size - 1);
+  const span = Math.ceil(radius / terrain.cellSize);
+  for (let dj = -span; dj <= span; dj++) {
+    for (let di = -span; di <= span; di++) {
+      const i = ci + di;
+      const j = cj + dj;
+      if (i < 0 || j < 0 || i >= terrain.size || j >= terrain.size) continue;
+      const w = cellToWorld(terrain, i, j);
+      if (distance(w, p) <= radius && water.mask[idx(terrain.size, i, j)]) return true;
+    }
+  }
+  return false;
+}
+
+function moatContextScore(
+  params: WorldParams,
+  terrain: TerrainData,
+  water: WaterData,
+  center: Vec2,
+  enclosure: Vec2[],
+): number {
+  const defense = frac(params.defensePressure);
+  const waterPresence = frac(params.waterPresence);
+  const rugged = frac(params.terrainRuggedness);
+  const craft = frac(params.prosperity) * 0.45 + frac(params.monumentality) * 0.55;
+  const offset = lerp(6, 11, waterPresence);
+  let lowTotal = 0;
+  let connectionTotal = 0;
+  let count = 0;
+
+  for (let i = 0; i < enclosure.length; i++) {
+    const a = enclosure[i];
+    const b = enclosure[(i + 1) % enclosure.length];
+    const mid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+    const vx = mid.x - center.x;
+    const vz = mid.z - center.z;
+    const len = Math.hypot(vx, vz) || 1;
+    const p = { x: mid.x + (vx / len) * offset, z: mid.z + (vz / len) * offset };
+    const h = sampleHeight(terrain, p.x, p.z);
+    lowTotal += clamp01((water.level + 3.5 - h) / 7);
+    connectionTotal += waterNearPoint(terrain, water, p, offset * 1.7) ? 1 : 0;
+    count += 1;
+  }
+
+  const lowGround = lowTotal / Math.max(1, count);
+  const waterConnection = connectionTotal / Math.max(1, count);
+  const defenseGate = smoothstep(0.64, 0.96, defense);
+  const waterGate = smoothstep(0.58, 0.94, waterPresence);
+  const ruggedPenalty = smoothstep(0.65, 1, rugged) * 0.16;
+
+  return (
+    defenseGate * 0.38 +
+    waterGate * 0.27 +
+    waterConnection * 0.16 +
+    lowGround * 0.12 +
+    craft * 0.07 -
+    ruggedPenalty
+  );
+}
+
+function shouldHaveMoat(
+  rng: Rng,
+  params: WorldParams,
+  terrain: TerrainData,
+  water: WaterData,
+  center: Vec2,
+  enclosure: Vec2[],
+  gates: Gate[],
+): boolean {
+  if (gates.length < 2) return false;
+  const defense = frac(params.defensePressure);
+  const waterPresence = frac(params.waterPresence);
+  if (defense < 0.65 || waterPresence < 0.6) return false;
+  return moatContextScore(params, terrain, water, center, enclosure) > 0.56 + rng.jitter(0.08);
+}
+
+function gateCausewayClearance(p: Vec2, center: Vec2, gates: Gate[], width: number): number {
+  let clearance = 0;
+  for (const gate of gates) {
+    const outward = Math.atan2(gate.position.z - center.z, gate.position.x - center.x);
+    const len = width * 2.4;
+    const a = {
+      x: gate.position.x - Math.cos(outward) * len,
+      z: gate.position.z - Math.sin(outward) * len,
+    };
+    const b = {
+      x: gate.position.x + Math.cos(outward) * len,
+      z: gate.position.z + Math.sin(outward) * len,
+    };
+    const d = pointSegmentDistance(p, a, b);
+    clearance = Math.max(clearance, 1 - smoothstep(width * 0.38, width * 0.92, d));
+  }
+  return clearance;
+}
+
+/** Carve a moat band along the enclosure boundary. Returns whether one was made. */
 function carveMoat(
   terrain: TerrainData,
   water: WaterData,
   center: Vec2,
   enclosure: Vec2[],
-  enclosureRadius: number,
+  gates: Gate[],
   waterPresence: number,
 ): boolean {
-  const inner = enclosureRadius * 1.04;
   const width = lerp(4, 9, waterPresence);
-  const outer = inner + width;
-  const depth = lerp(2, 4, waterPresence);
+  const inner = width * 0.55;
+  const outer = width * 1.45;
+  const depth = lerp(0.9, 2.2, waterPresence);
   const { size } = terrain;
   let carved = 0;
   for (let j = 0; j < size; j++) {
     for (let i = 0; i < size; i++) {
       const w = cellToWorld(terrain, i, j);
-      const r = distance(w, center);
-      if (r >= inner && r <= outer) {
-        // Don't flood right where a gate causeway crosses (nearest enclosure pt).
+      if (pointInPolygon(w, enclosure)) continue;
+      const d = distanceToBoundary(w, enclosure);
+      if (d >= inner && d <= outer) {
+        const causeway = gateCausewayClearance(w, center, gates, width);
         const k = idx(size, i, j);
-        const sink = water.level - depth * (1 - Math.abs((r - (inner + width / 2)) / (width / 2)));
+        if (causeway > 0.55) {
+          water.mask[k] = 0;
+          terrain.heights[k] = Math.max(terrain.heights[k], water.level + 0.18 * causeway);
+          continue;
+        }
+        const band = 1 - Math.abs((d - (inner + outer) / 2) / ((outer - inner) / 2));
+        const sink = water.level - depth * smoothstep(0, 1, band) * (1 - causeway);
         if (terrain.heights[k] > sink) terrain.heights[k] = sink;
         water.mask[k] = 1;
         carved++;
       }
     }
   }
-  void enclosure;
-  void worldToCellF;
-  void clampInt;
   return carved > 0;
+}
+
+function refreshTerrainStats(terrain: TerrainData): void {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const h of terrain.heights) {
+    if (h < min) min = h;
+    if (h > max) max = h;
+  }
+  terrain.minHeight = min;
+  terrain.maxHeight = max;
+}
+
+function refreshWaterCoverage(water: WaterData): void {
+  let cells = 0;
+  for (const wet of water.mask) {
+    if (wet) cells++;
+  }
+  water.coverage = cells / water.mask.length;
 }
