@@ -5,12 +5,44 @@
  * never navigates away — the old diorama stays on screen under a light
  * "Generating…" badge until the new one is ready.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  buildScenarioUrl,
+  parseScenarioSearch,
+  type DebugCamera,
+  type DebugCameraSnapshot,
+} from './debug/scenario';
 import { generateWorld } from './generation/generate';
-import { DEFAULT_PARAMS, DEFAULT_SEED, type WorldParams } from './generation/params';
+import type { WorldParams } from './generation/params';
 import type { World } from './generation/types';
-import { Viewer } from './viewer/Viewer';
+import { Viewer, type ViewerDebugHandle } from './viewer/Viewer';
 import { ControlPanel } from './ui/ControlPanel';
+
+interface HamletDebugState {
+  seed: string;
+  params: WorldParams;
+  camera: DebugCameraSnapshot | null;
+  scenarioUrl: string;
+  world: {
+    seed: string;
+    seedValue: number;
+    half: number;
+    center: World['center'];
+    summary: World['summary'];
+  };
+}
+
+interface HamletDebugApi {
+  getState: () => HamletDebugState;
+  scenarioUrl: () => string;
+  setCamera: (camera: DebugCamera) => void;
+}
+
+declare global {
+  interface Window {
+    __hamletDebug?: HamletDebugApi;
+  }
+}
 
 function randomSeed(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -20,13 +52,16 @@ function randomSeed(): string {
 }
 
 export default function App(): JSX.Element {
+  const initialScenario = useMemo(() => parseScenarioSearch(window.location.search), []);
+  const viewerDebug = useRef<ViewerDebugHandle>(null);
+
   // Draft inputs (edited freely; only applied on Generate).
-  const [seed, setSeed] = useState<string>(DEFAULT_SEED);
-  const [params, setParams] = useState<WorldParams>(DEFAULT_PARAMS);
+  const [seed, setSeed] = useState<string>(initialScenario.seed);
+  const [params, setParams] = useState<WorldParams>(initialScenario.params);
 
   // The world currently on screen.
   const [world, setWorld] = useState<World>(() =>
-    generateWorld({ seed: DEFAULT_SEED, params: DEFAULT_PARAMS }),
+    generateWorld({ seed: initialScenario.seed, params: initialScenario.params }),
   );
   const [generating, setGenerating] = useState(false);
   const [resetSignal, setResetSignal] = useState(0);
@@ -65,10 +100,46 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey);
   }, [regenerate, resetCamera]);
 
+  useEffect(() => {
+    const getScenarioUrl = () =>
+      buildScenarioUrl(window.location.href, {
+        seed,
+        params,
+        camera: viewerDebug.current?.getCameraSnapshot() ?? undefined,
+      });
+
+    window.__hamletDebug = {
+      getState: () => ({
+        seed,
+        params,
+        camera: viewerDebug.current?.getCameraSnapshot() ?? null,
+        scenarioUrl: getScenarioUrl(),
+        world: {
+          seed: world.seed,
+          seedValue: world.seedValue,
+          half: world.half,
+          center: world.center,
+          summary: world.summary,
+        },
+      }),
+      scenarioUrl: getScenarioUrl,
+      setCamera: (camera) => viewerDebug.current?.setCamera(camera),
+    };
+
+    return () => {
+      delete window.__hamletDebug;
+    };
+  }, [params, seed, world]);
+
   return (
     <div className="app">
       <div className="viewer-layer">
-        <Viewer world={world} resetSignal={resetSignal} />
+        <Viewer
+          ref={viewerDebug}
+          world={world}
+          resetSignal={resetSignal}
+          initialCamera={initialScenario.camera}
+        />
       </div>
 
       {generating && (

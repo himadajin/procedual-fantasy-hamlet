@@ -111,6 +111,11 @@ mandatory checklist for every edit.
 
 - Generation changes should keep or add unit coverage for determinism,
   parameter effects and structural invariants.
+- For reproducible browser/debug checks, use the scenario URL and
+  `window.__hamletDebug` interface documented in
+  [docs/debug.md](docs/debug.md). Prefer this API when camera state, parameter
+  state, or generated summary can be verified directly instead of inferred from
+  screenshots or mouse gestures.
 - Code changes generally target `npm run typecheck`, `npm run lint`,
   `npm test`, and `npm run format:check` before completion.
 - Run `npm run build` when integration risk is non-trivial. Run
